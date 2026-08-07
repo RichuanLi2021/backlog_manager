@@ -1,0 +1,27 @@
+{
+  "_comment": "Config for export_regions.py. Each region base_jql is the dashboard's authoritative JQL (from the dashboard's 'N filtered issues' navigator), WITH the domain clause removed so the tool can split TDS-AR / TDS-GL, and with the quarter value replaced by the {quarter} placeholder. The tool ANDs the domain selection onto base_jql. NA keys quarter via 'Request Qtr' ~ {quarter}; LAC keys quarter via labels = {quarter}.",
+  "regions": {
+    "NA": {
+      "dashboard": "https://jira.synnex.com/secure/Dashboard.jspa?selectPageId=25900",
+      "label": "CIS ALL (North America)",
+      "base_jql": "issuetype in (Backlog) and not (status = \"100-Done\" and timespent = 0) and \"Request Qtr\" ~ {quarter}"
+    },
+    "LAC": {
+      "dashboard": "https://jira.synnex.com/secure/Dashboard.jspa?selectPageId=25816",
+      "label": "LAC (MCA) CIS Conversion",
+      "base_jql": "(project = MCAM or \"Request Region\" = LAC and project not in (WBRCC)) and issuetype = Backlog and (status in (\"10-Placeholder\", \"20-RequirementCompleted\", \"30-RequirementAccepted\", \"40-SpecDone\", \"50-BacklogAccepted\", \"60-AccurateEstDone\", \"70-InCoding\", \"80-InTesting\", \"90-UATReady\", \"95-Deployed\", \"99-OnHold\") or status in (\"100-Done\") and \"Deploy Plan ID/Status\" !~ None or \"Deploy Plan\" is not EMPTY) and labels = {quarter}"
+    }
+  },
+  "domain_field": "(SNX) Biz Domain",
+  "domains": {
+    "TDS-AR": ["TDS-AR"],
+    "TDS-GL": ["TDS-GL"],
+    "TDS-AR+GL": ["TDS-AR", "TDS-GL"]
+  },
+  "default_quarter": "2026Q3",
+  "deploy_plan_field": "customfield_18302",
+  "snx_release_field": "customfield_18613",
+  "biz_domain_field": "customfield_14900",
+  "req_qtr_field": "customfield_16308",
+  "backlog_source_field_name": "Backlog Source"
+}

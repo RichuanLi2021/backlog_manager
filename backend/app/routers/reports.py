@@ -1,0 +1,377 @@
+from datetime import datetime
+
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Response
+from sqlalchemy import func, select
+from sqlalchemy.orm import Session
+
+from ..config import DEFAULT_QUARTER, REPORT_SPECS
+from ..db import SessionLocal, get_db
+from ..models import BacklogSnapshot, Report, ReportSnapshot, SyncJob
+from ..schemas import (
+    BacklogRow,
+    ReportDetail,
+    ReportInfo,
+    SyncStatus,
+    TreeBacklog,
+    TreeNdp,
+    TreeRelease,
+    TreeSheet,
+)
+from ..services import excel_export, jira_sync, merge
+from .snapshots import latest_snapshot, newest_snapshot, snapshot_values, to_info
+
+router = APIRouter(prefix="/api", tags=["reports"])
+
+SHEET_ORDER = ["NA_AR", "NA_GL", "NA_AR+GL", "LAC_AR", "LAC_GL", "LAC_AR+GL"]
+
+# Used until a report has been synced before and can be timed from history.
+DEFAULT_ESTIMATES = {"ALL": 150, "AR_GL": 95, "AR": 30, "GL": 45}
+
+
+def estimate_for(db: Session, report_kind: str) -> int:
+    """Average duration of recent successful syncs of the same scope."""
+    rows = db.execute(
+        select(SyncJob.started_at, SyncJob.finished_at)
+        .where(SyncJob.report_kind == report_kind, SyncJob.state == "done")
+        .order_by(SyncJob.id.desc())
+        .limit(5)
+    ).all()
+    durations = [(f - s).total_seconds() for s, f in rows if f and s]
+    if durations:
+        return int(sum(durations) / len(durations))
+    return DEFAULT_ESTIMATES.get(report_kind, 60)
+
+
+def job_status(db: Session, job: SyncJob) -> SyncStatus:
+    status = SyncStatus.model_validate(job, from_attributes=True)
+    status.estimate_seconds = estimate_for(db, job.report_kind)
+    end = job.finished_at or datetime.now()
+    status.elapsed_seconds = max(0, int((end - job.started_at).total_seconds()))
+    return status
+
+
+def sheet_sort_key(sheet: str) -> tuple[int, str]:
+    return (SHEET_ORDER.index(sheet) if sheet in SHEET_ORDER else len(SHEET_ORDER), sheet)
+
+
+def _report_info(db: Session, kind: str, quarter: str) -> ReportInfo:
+    report = db.scalar(select(Report).where(Report.kind == kind, Report.quarter == quarter))
+    count = db.scalar(
+        select(func.count(BacklogSnapshot.id)).where(
+            BacklogSnapshot.report_kind == kind, BacklogSnapshot.quarter == quarter
+        )
+    )
+    return ReportInfo(
+        kind=kind,
+        quarter=quarter,
+        last_jira_sync_at=report.last_jira_sync_at if report else None,
+        last_sync_status=report.last_sync_status if report else "never",
+        last_sync_error=report.last_sync_error if report else None,
+        item_count=count or 0,
+    )
+
+
+@router.get("/reports", response_model=list[ReportInfo])
+def list_reports(
+    quarter: str = Query(default=DEFAULT_QUARTER), db: Session = Depends(get_db)
+):
+    return [_report_info(db, kind, quarter) for kind in REPORT_SPECS]
+
+
+@router.get("/quarters", response_model=list[str])
+def list_quarters(db: Session = Depends(get_db)):
+    known = set(db.scalars(select(BacklogSnapshot.quarter).distinct()))
+    known.add(DEFAULT_QUARTER)
+    return sorted(known, reverse=True)
+
+
+def _rows(
+    db: Session,
+    kind: str,
+    quarter: str,
+    include_archived: bool,
+    snapshot: ReportSnapshot | None = None,
+) -> list[BacklogRow]:
+    """Live Jira rows, optionally overlaid with the user values from one snapshot."""
+    stmt = select(BacklogSnapshot).where(
+        BacklogSnapshot.report_kind == kind, BacklogSnapshot.quarter == quarter
+    )
+    if not include_archived:
+        stmt = stmt.where(BacklogSnapshot.archived.is_(False))
+    snapshots = list(db.scalars(stmt))
+
+    saved = snapshot_values(db, snapshot.id) if snapshot else {}
+
+    # The live view keeps its own columns empty, but still shows the ranking people
+    # last agreed on, so priority order is not lost when nobody picks a snapshot.
+    if snapshot:
+        ranks = saved
+    else:
+        newest = newest_snapshot(db, kind, quarter)
+        ranks = snapshot_values(db, newest.id) if newest else {}
+
+    rows = []
+    for s in snapshots:
+        ov = saved.get((s.sheet, s.key))
+        rows.append(
+            BacklogRow(
+                id=s.id,
+                sheet=s.sheet,
+                region=s.region,
+                domain=s.domain,
+                key=s.key,
+                release=s.release,
+                release_title=s.release_title,
+                ndp=s.ndp,
+                ndp_status=s.ndp_status,
+                ndp_deploy_date=s.ndp_deploy_date,
+                summary=s.summary,
+                issue_type=s.issue_type,
+                status=s.status,
+                assignee=s.assignee,
+                reporter=s.reporter,
+                priority=s.priority,
+                biz_domain=s.biz_domain,
+                req_qtr=s.req_qtr,
+                labels=s.labels,
+                backlog_source=s.backlog_source,
+                est_h=s.est_h,
+                spent_h=s.spent_h,
+                archived=s.archived,
+                rank=(ranks.get((s.sheet, s.key)).rank if ranks.get((s.sheet, s.key)) else 0),
+                developer=ov.developer if ov else "",
+                uat_eta=ov.uat_eta if ov else "",
+                prod_eta=ov.prod_eta if ov else "",
+                comments=ov.comments if ov else "",
+            )
+        )
+    # Unranked rows (rank 0) fall to the bottom in Jira order.
+    rows.sort(key=lambda r: (sheet_sort_key(r.sheet), r.rank == 0, r.rank, r.release, r.ndp, r.key))
+
+    # A row nobody has ranked shows its position instead of a meaningless 0.
+    position = {}
+    for row in rows:
+        position[row.sheet] = position.get(row.sheet, 0) + 1
+        if row.rank == 0:
+            row.rank = position[row.sheet]
+    return rows
+
+
+@router.get("/reports/{kind}/{quarter}", response_model=ReportDetail)
+def get_report(
+    kind: str,
+    quarter: str,
+    include_archived: bool = Query(default=True),
+    snapshot_id: int | None = Query(default=None),
+    role: str | None = Query(default=None, description="Load this role's latest snapshot"),
+    db: Session = Depends(get_db),
+):
+    """Without snapshot_id or role this returns the untouched Jira view."""
+    if kind not in REPORT_SPECS:
+        raise HTTPException(status_code=404, detail=f"unknown report kind: {kind}")
+
+    snapshot = None
+    if snapshot_id is not None:
+        snapshot = db.get(ReportSnapshot, snapshot_id)
+        if snapshot is None:
+            raise HTTPException(status_code=404, detail="snapshot not found")
+    elif role:
+        snapshot = latest_snapshot(db, kind, quarter, role.upper())
+
+    rows = _rows(db, kind, quarter, include_archived, snapshot)
+    sheets = sorted({r.sheet for r in rows}, key=sheet_sort_key)
+    return ReportDetail(
+        report=_report_info(db, kind, quarter),
+        sheets=sheets,
+        items=rows,
+        snapshot=to_info(db, snapshot) if snapshot else None,
+    )
+
+
+@router.get("/reports/{kind}/{quarter}/export")
+def export_report(
+    kind: str,
+    quarter: str,
+    include_archived: bool = Query(default=True),
+    sheet: str | None = Query(default=None, description="Export one region sheet only"),
+    status: str | None = Query(default=None, description="Export one backlog status only"),
+    snapshot_id: int | None = Query(default=None),
+    role: str | None = Query(default=None),
+    db: Session = Depends(get_db),
+):
+    """Download the current view as an Excel workbook, one worksheet per sheet."""
+    if kind not in REPORT_SPECS:
+        raise HTTPException(status_code=404, detail=f"unknown report kind: {kind}")
+
+    snapshot = None
+    if snapshot_id is not None:
+        snapshot = db.get(ReportSnapshot, snapshot_id)
+        if snapshot is None:
+            raise HTTPException(status_code=404, detail="snapshot not found")
+    elif role and role.upper() != "LIVE":
+        snapshot = latest_snapshot(db, kind, quarter, role.upper())
+
+    rows = _rows(db, kind, quarter, include_archived, snapshot)
+    if sheet:
+        rows = [r for r in rows if r.sheet == sheet]
+    if status:
+        rows = [r for r in rows if (r.status.strip() or "N/A") == status]
+    if not rows:
+        raise HTTPException(status_code=404, detail="nothing to export")
+
+    report = _report_info(db, kind, quarter)
+    view = (
+        f"{snapshot.role} snapshot saved {snapshot.created_at:%Y-%m-%d %H:%M:%S} by "
+        f"{snapshot.author_name or snapshot.author_email}"
+        if snapshot
+        else "Live Jira data"
+    )
+    data = excel_export.build_workbook(
+        rows,
+        [
+            ("Report", f"{kind} - {quarter}"),
+            ("View", view),
+            ("Status filter", status or "all"),
+            ("Jira last updated", str(report.last_jira_sync_at or "never")),
+            ("Rows", str(len(rows))),
+        ],
+    )
+
+    stamp = datetime.now().strftime("%Y%m%d_%H%M")
+    tag = snapshot.role if snapshot else "Live"
+    scope = f"_{sheet.replace('+', '')}" if sheet else ""
+    if status:
+        scope += f"_{status.replace('/', '-')}"
+    filename = f"{kind}_{quarter}{scope}_{tag}_{stamp}.xlsx"
+    return Response(
+        content=data,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+@router.get("/reports/{kind}/{quarter}/tree", response_model=list[TreeSheet])
+def get_tree(
+    kind: str,
+    quarter: str,
+    snapshot_id: int | None = Query(default=None),
+    role: str | None = Query(default=None),
+    db: Session = Depends(get_db),
+):
+    if kind not in REPORT_SPECS:
+        raise HTTPException(status_code=404, detail=f"unknown report kind: {kind}")
+
+    snapshot = (
+        db.get(ReportSnapshot, snapshot_id)
+        if snapshot_id is not None
+        else (latest_snapshot(db, kind, quarter, role.upper()) if role else None)
+    )
+    rows = _rows(db, kind, quarter, include_archived=False, snapshot=snapshot)
+
+    out: list[TreeSheet] = []
+    for sheet in sorted({r.sheet for r in rows}, key=sheet_sort_key):
+        sheet_rows = [r for r in rows if r.sheet == sheet]
+        releases: list[TreeRelease] = []
+        for release in sorted({r.release for r in sheet_rows}):
+            rel_rows = [r for r in sheet_rows if r.release == release]
+            ndps: list[TreeNdp] = []
+            for ndp in sorted({r.ndp for r in rel_rows}):
+                ndp_rows = [r for r in rel_rows if r.ndp == ndp]
+                ndps.append(
+                    TreeNdp(
+                        ndp=ndp,
+                        status=ndp_rows[0].ndp_status,
+                        deploy_date=ndp_rows[0].ndp_deploy_date,
+                        backlogs=[
+                            TreeBacklog(
+                                id=r.id,
+                                key=r.key,
+                                summary=r.summary,
+                                status=r.status,
+                                assignee=r.assignee,
+                                developer=r.developer,
+                                est_h=r.est_h,
+                                spent_h=r.spent_h,
+                            )
+                            for r in ndp_rows
+                        ],
+                    )
+                )
+            releases.append(
+                TreeRelease(release=release, title=rel_rows[0].release_title, ndps=ndps)
+            )
+        out.append(TreeSheet(sheet=sheet, releases=releases))
+    return out
+
+
+def _run_sync(job_id: int, kinds: list[str], quarter: str):
+    db = SessionLocal()
+    try:
+        job = db.get(SyncJob, job_id)
+        done = []
+        for kind in kinds:
+            job.message = f"Fetching {kind} from Jira..."
+            db.commit()
+            rows = jira_sync.fetch_report(kind, quarter)
+            stats = merge.apply_snapshot(db, kind, quarter, rows)
+            note = (
+                f" - incomplete Jira response, {stats['missing']} rows kept"
+                if stats["suspect"]
+                else f" ({stats['archived']} archived)"
+            )
+            done.append(f"{kind}: {stats['total']} rows{note}")
+        job.state = "done"
+        job.message = "; ".join(done)
+        job.finished_at = datetime.now()
+        db.commit()
+    except Exception as exc:  # surfaced to the UI via /api/sync/status
+        db.rollback()
+        job = db.get(SyncJob, job_id)
+        job.state = "failed"
+        job.message = f"{type(exc).__name__}: {exc}"
+        job.finished_at = datetime.now()
+        for kind in kinds:
+            report = db.scalar(
+                select(Report).where(Report.kind == kind, Report.quarter == quarter)
+            )
+            if report is not None:
+                report.last_sync_status = "failed"
+                report.last_sync_error = job.message
+        db.commit()
+    finally:
+        db.close()
+
+
+@router.post("/reports/{kind}/{quarter}/refresh", response_model=SyncStatus)
+def refresh_report(
+    kind: str,
+    quarter: str,
+    background: BackgroundTasks,
+    db: Session = Depends(get_db),
+):
+    """Trigger a Jira sync. Use kind=ALL to refresh all three reports."""
+    kinds = list(REPORT_SPECS) if kind.upper() == "ALL" else [kind]
+    if any(k not in REPORT_SPECS for k in kinds):
+        raise HTTPException(status_code=404, detail=f"unknown report kind: {kind}")
+
+    running = db.scalar(select(SyncJob).where(SyncJob.state == "running"))
+    if running is not None:
+        raise HTTPException(status_code=409, detail=f"sync already running (job {running.id})")
+
+    job = SyncJob(quarter=quarter, report_kind=kind.upper(), message="Queued")
+    db.add(job)
+    db.commit()
+    background.add_task(_run_sync, job.id, kinds, quarter)
+    return job_status(db, job)
+
+
+@router.get("/sync/status", response_model=SyncStatus | None)
+def sync_status(
+    kind: str | None = Query(default=None, description="Only jobs covering this report"),
+    db: Session = Depends(get_db),
+):
+    stmt = select(SyncJob).order_by(SyncJob.id.desc())
+    if kind:
+        stmt = stmt.where(SyncJob.report_kind.in_([kind.upper(), "ALL"]))
+    job = db.scalar(stmt.limit(1))
+    return job_status(db, job) if job else None

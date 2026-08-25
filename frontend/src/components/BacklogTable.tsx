@@ -108,6 +108,8 @@ interface Props {
   statusControl: ReactNode
   exportHref: string
   exportLabel: string
+  exportAllHref: string
+  exportAllLabel: string
 }
 
 function Row({
@@ -210,6 +212,8 @@ export default function BacklogTable({
   statusControl,
   exportHref,
   exportLabel,
+  exportAllHref,
+  exportAllLabel,
 }: Props) {
   const [sorting, setSorting] = useState<SortingState>([])
 
@@ -261,8 +265,13 @@ export default function BacklogTable({
             Reordering is off while the table is sorted or filtered by search or status
           </span>
         )}
-        <a className="button export" href={exportHref} title={exportLabel}>
-          Export to Excel
+        {/* All tabs is the default, because a workbook missing half its region
+            sheets is the wrong thing to share or to feed back in. */}
+        <a className="button export primary-link" href={exportAllHref} title={exportAllLabel}>
+          Export to Excel (all tabs)
+        </a>
+        <a className="button" href={exportHref} title={exportLabel}>
+          This tab only
         </a>
       </div>
 

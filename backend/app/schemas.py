@@ -101,6 +101,148 @@ class IdentifyRequest(BaseModel):
     identifier: str
 
 
+class QuarterCreate(BaseModel):
+    quarter: str
+
+
+class AnalyzedChange(BaseModel):
+    """One user-editable cell the uploaded file disagrees with."""
+
+    field: str
+    current: str
+    incoming: str
+    state: Literal["added", "changed"]
+
+
+class AnalyzedRow(BaseModel):
+    sheet: str
+    key: str
+    summary: str = ""
+    status: str = ""
+    archived: bool = False
+    source_sheet: str = ""
+    source_row: int = 0
+    changes: list[AnalyzedChange]
+    # Fields the file also filled in that already agree, kept so the diff can show
+    # why a row is only partly highlighted.
+    unchanged: list[str] = []
+
+
+class AnalyzedSheet(BaseModel):
+    """Coverage of one worksheet of the upload, so no tab is silently skipped."""
+
+    name: str
+    rows_read: int
+    matched: int
+    target_sheets: list[str]
+
+
+class IdenticalRow(BaseModel):
+    """A row the file has an opinion on that the baseline already agrees with."""
+
+    sheet: str
+    key: str
+    summary: str = ""
+    fields: list[str]
+
+
+class AnalysisResult(BaseModel):
+    """Preview of what an uploaded workbook would change, before anything is saved."""
+
+    filename: str
+    report_kind: str
+    quarter: str
+    target_role: EditableRole
+    compare_with: str
+    baseline_label: str
+    author: UserInfo
+    baseline: SnapshotInfo | None = None
+    detected_columns: dict[str, str]
+    sheets_read: list[str]
+    sheets_ignored: list[str]
+    sheet_summary: list[AnalyzedSheet]
+    rows_read: int
+    keys_matched: int
+    unmatched_keys: list[str]
+    unchanged_cells: int
+    rows: list[AnalyzedRow]
+    identical: list[IdenticalRow]
+    added_cells: int = 0
+    changed_cells: int = 0
+    stale_jira_cells: int = 0
+    elapsed_ms: int = 0
+    warnings: list[str]
+
+
+class FileFieldChange(BaseModel):
+    """One Jira-owned cell in the uploaded file that has gone stale."""
+
+    sheet: str
+    row: int
+    key: str
+    field: str
+    label: str
+    in_file: str
+    current: str
+
+
+class FileNewRow(BaseModel):
+    sheet: str
+    key: str
+    summary: str = ""
+    status: str = ""
+    ndp: str = ""
+    ndp_status: str = ""
+
+
+class FileGoneRow(BaseModel):
+    sheet: str
+    row: int
+    key: str
+    reason: str
+
+
+class FileSheetPlan(BaseModel):
+    name: str
+    resolved_to: str | None = None
+    header_row: int
+    rows_in_file: int
+    matched: int
+    columns: dict[str, str]
+
+
+class FileUpdatePlan(BaseModel):
+    """What refreshing a circulated workbook from the platform would do to it."""
+
+    filename: str
+    report_kind: str
+    quarter: str
+    last_jira_sync_at: datetime | None = None
+    sheets: list[FileSheetPlan]
+    sheets_ignored: list[str]
+    changes: list[FileFieldChange]
+    field_counts: dict[str, int]
+    new_rows: list[FileNewRow]
+    gone_rows: list[FileGoneRow]
+    unchanged_cells: int
+    warnings: list[str]
+
+
+class ApplyChange(BaseModel):
+    sheet: str
+    key: str
+    field: str
+    value: str
+
+
+class ApplyAnalysisRequest(BaseModel):
+    author_email: str
+    target_role: EditableRole
+    label: str = ""
+    based_on_id: int | None = None
+    changes: list[ApplyChange]
+
+
 class TreeBacklog(BaseModel):
     id: int
     key: str

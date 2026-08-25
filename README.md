@@ -4,18 +4,6 @@ A centralized web platform for SE, TPM, and DEV stakeholders to view, prioritize
 
 ---
 
-## Problem Statement
-
-Today, backlog reporting is done via locally generated Excel files. This creates three recurring pain points:
-
-| # | Pain Point | Impact |
-|---|-----------|--------|
-| 1 | **No centralized report** | Everyone generates their own Excel copy. Changes are not reflected in real time. People switch between versions and it is hard to track who has what. |
-| 2 | **No flexibility to rank** | Reports mirror Jira query order. Once generated, teams cannot drag-and-drop to reprioritize by business need, or add custom comments/columns easily. |
-| 3 | **Report falls behind** | Backlogs change weekly (new items, status moves, NDP updates). Local Excel files go stale immediately; other stakeholders never see the update unless someone re-sends a file. |
-
----
-
 ## Solution
 
 A shared web application where:
@@ -119,6 +107,10 @@ Jira data through the `jira-rel-review` skill. Start with [Running it](#running-
 8. **Role snapshots** — SE / TPM / DEV views, each with full save history by date and time
 9. **Audit log** — who changed which field, from what to what, in which snapshot
 10. **Excel export** — the visible view, styled like the skill's workbooks
+11. **Spreadsheet analyzer** — upload a circulated Excel copy, diff it against the live
+    report or any role view, and save the parts you keep into the SE, TPM, or DEV view
+12. **Spreadsheet updater** — upload an old exported report and get it back with the
+    Jira columns brought forward, every edit and highlight left as it was
 
 ### Refresh rules
 
@@ -196,11 +188,19 @@ SyncJob
 ```
 GET    /api/reports                            List reports for a quarter
 GET    /api/quarters                           Quarters present in the database
+POST   /api/quarters                           Open an empty quarter, e.g. 2026Q4
+DELETE /api/quarters/:quarter                  Take an untouched quarter back off the list
 GET    /api/reports/:kind/:quarter             Live view; add ?role= or ?snapshot_id=
 GET    /api/reports/:kind/:quarter/tree        RELEASE -> NDP -> Backlog hierarchy
 GET    /api/reports/:kind/:quarter/export      Download the view as .xlsx (?sheet=, ?status=)
 POST   /api/reports/:kind/:quarter/refresh     Start a Jira sync (kind=ALL for all three)
 GET    /api/sync/status?kind=GL                Job state, elapsed, and duration estimate
+
+POST   /api/reports/:kind/:quarter/analyze              Upload an .xlsx, get a diff preview
+                                                        (compare_with=LIVE|SE|TPM|DEV)
+POST   /api/reports/:kind/:quarter/analyze/apply        Save the accepted changes as a snapshot
+POST   /api/reports/:kind/:quarter/refresh-file         What a stale workbook would gain
+POST   /api/reports/:kind/:quarter/refresh-file/download  The same workbook, brought up to date
 
 GET    /api/reports/:kind/:quarter/snapshots   Saves, optionally ?role=SE
 POST   /api/reports/:kind/:quarter/snapshots   Save the current table as the author's role
@@ -225,6 +225,8 @@ GET    /api/audit?backlog_id=:id               Change history for one backlog
 | `/reports` | Report picker: AR_GL / AR / GL |
 | `/reports/:kind/:quarter` | Main view: region tabs on top, then search, views, and update |
 | `/reports/:kind/:quarter/tree` | Read-only RELEASE → NDP → Backlog tracker, filtered by NDP status |
+| `/reports/:kind/:quarter/analyze` | Upload a spreadsheet, review the diff, save it into a role view |
+| `/reports/:kind/:quarter/update-file` | Upload a stale spreadsheet, download it up to date |
 | `/admin/users` | Group membership for System Engineer / TPM / Developer |
 
 ### Main view layout
@@ -233,7 +235,7 @@ GET    /api/audit?backlog_id=:id               Change history for one backlog
 NA_AR | NA_GL | NA_AR+GL | LAC_AR | LAC_GL | LAC_AR+GL      <- region tabs
 [ search ] [ Edit ]           Live | SE View | TPM View | DEV View   [ Update from Jira ]
                               Snapshot: 08/06/2026 06:15 PM ...      Last updated: ...
-[ All statuses (95) v ]                                        [ Export to Excel ]
+[ All statuses (95) v ]           [ Export to Excel (all tabs) ] [ This tab only ]
 ```
 
 The status dropdown narrows the table to one backlog status. Each entry carries its count
@@ -252,9 +254,12 @@ status is selected, because ranking is decided across the whole sheet.
 - Click a backlog key for its change history
 - Search box and status dropdown filter the current sheet; searching, sorting, or picking
   a single status suspends reordering
-- **Export to Excel** downloads exactly what the current view holds: the visible region
-  sheet, in its saved order, with the user columns from the selected snapshot, NDP status
-  cells colored with the skill's palette, and an `about` tab recording the source
+- **Export to Excel (all tabs)** is the default: every region sheet of the report in one
+  workbook, one tab each, in saved order, with the user columns from the selected
+  snapshot, NDP status cells colored with the skill's palette, and an `about` tab
+  recording the source. Share this, and feed this to the Analyzer and the Updater, which
+  can only cover the tabs a file actually contains
+- **This tab only** narrows the same download to the region sheet on screen
 
 ### Tree page
 
@@ -278,14 +283,22 @@ backlog_manager/
       db.py                SQLAlchemy engine/session
       models.py            Report, BacklogSnapshot, User, ReportSnapshot, SnapshotRow, AuditLog, SyncJob
       schemas.py           Pydantic response models
-      routers/             reports.py, snapshots.py, users.py, audit.py
+      routers/             reports.py, snapshots.py, users.py, audit.py, analyzer.py
       services/
         jira_sync.py       calls the skill, stabilizes search, flattens to rows
         merge.py           writes Jira rows only; never touches snapshots
         excel_export.py    builds the .xlsx download
+        spreadsheet_layout.py    finds the header row, key column and fields in any copy
+        spreadsheet_analyzer.py  file -> platform: diffs an upload against a view
+        spreadsheet_updater.py   platform -> file: rewrites a stale file's Jira columns
     .env                   ADMIN_KEY, never committed
     verify_parity.py       counts vs Excel + internal invariants
     test_snapshots.py      groups, identity, and snapshots surviving a refresh
+    test_analyzer.py       analyzer parsing and diff rules, no server needed
+    test_analyzer_api.py   export -> renamed copy -> preview -> partial apply
+    test_updater.py        refresh keeps edits, ranks and highlighting, no server needed
+    test_updater_api.py    export -> aged copy -> refreshed download
+    test_quarters.py       opening, using and removing a quarter
     db_info.py             where the database is and what is in it
     requirements.txt
   scripts/
@@ -293,7 +306,7 @@ backlog_manager/
     start.ps1              runs UI + API together on one port
   frontend/
     src/
-      pages/               ReportsPage, ReportPage, TreePage, UsersPage
+      pages/               ReportsPage, ReportPage, TreePage, AnalyzerPage, UpdaterPage, UsersPage
       components/          BacklogTable, EditableCell, IdentityPrompt, UpdateButton, AuditDrawer
       api.ts, types.ts, useSync.ts, ndp.ts, styles.css
     package.json
@@ -347,6 +360,132 @@ keeps its own text columns empty but still shows the ranking from the most recen
 any role, so priority order is never lost. Where nothing has been ranked yet, rows are
 numbered by their position in Jira order rather than shown as zero.
 
+## Opening a new quarter
+
+Backlogs roll over every quarter, so the quarter list is not fixed. The dropdown on the
+Reports page ends with **+ Add quarter...**, which opens a box already filled in with the
+quarter after the one on screen — `2026Q3` suggests `2026Q4`, `2026Q4` suggests `2027Q1`.
+
+The new quarter appears immediately with the same three reports, **all empty**, and stays
+that way until someone presses **Update from Jira**. That sync puts the quarter name
+straight into the skill's JQL, so `2026Q4` fetches `"Request Qtr" ~ 2026Q4` for NA and
+`labels = 2026Q4` for LAC, and the rows it stores are that quarter's.
+
+The name is validated as four digits, `Q`, then `1`-`4`, because it is substituted into the
+query verbatim and a typo would otherwise sync an empty report with no explanation.
+Lower case and stray spaces are accepted and normalized. A quarter that is still empty can
+be taken back off the list with the **Remove** button next to the dropdown, which is the way
+out of a mistyped name; once it holds backlogs or saves, that button refuses.
+
+## Importing a spreadsheet someone sent back
+
+Copies of the report still circulate by email, and they come back with other people's
+ranking, comments, developer names, and ETAs in them. **Analyzer** in the top nav (or
+**Import spreadsheet** next to Edit) takes one of those files, works out what it is
+saying, and shows the difference before anything is written.
+
+```mermaid
+flowchart LR
+  Drop["Drop an .xlsx"] --> Read["Match columns and keys"]
+  Read --> Diff["Compare with the chosen baseline"]
+  Diff --> Review["Diff: - current, + from the file"]
+  Review --> Pick["Untick what you do not want"]
+  Pick --> Save["Save into SE / TPM / DEV as a snapshot"]
+```
+
+1. **Identify.** Same check as editing: only System Engineer, TPM, and Developer members
+   can import, and the endpoints refuse anyone else rather than relying on the UI.
+2. **Choose what to compare against.** These are two separate decisions:
+
+   | Baseline | What the diff means |
+   |----------|---------------------|
+   | **Latest backlog report** | The live Jira pull with no snapshot over it. Everything the file fills in reads as incoming — use this to see the whole of what a copy is carrying |
+   | **SE / TPM / DEV View** | That group's most recent save. Use this to see only what the copy adds on top of what the group already agreed |
+
+   Comparing against one view and saving into another is allowed: measure a file against
+   the live report, then land it in TPM View. Whichever view you save into, the snapshot
+   is still built on that view's own latest save, so its other rows are never lost.
+3. **Drop the file.** `.xlsx` or `.xlsm`, up to 25 MB. An `.xls` is refused with a note to
+   re-save it.
+4. **Read the diff.** A commit-style view, one card per backlog: the key, its sheet,
+   status and summary, then each field as a red `−` line for what the baseline holds and
+   a green `+` line for what the file says, tagged `added` or `changed`. Tick boxes sit on
+   every line and on the card, so a whole backlog or a single cell can be dropped.
+   Alongside it: a stat bar (`+n added  ~n changed  n identical  n not in the report`),
+   column filters with counts, and an **Already identical** tab listing the rows the file
+   speaks about that the baseline already agrees with — so an empty diff is visibly a
+   result rather than a failure.
+5. **Save.** The accepted lines are written as a new snapshot of the target view, authored
+   by whoever uploaded, labelled with the file name, with one audit row per applied cell.
+
+The analyzer only ever imports the columns people type into. If the upload's Jira columns
+have gone stale as well, the summary says how many cells and links to the Updater below,
+which is the tool for writing Jira data back into a file.
+
+### What the analyzer works out for itself
+
+| Situation | Behavior |
+|-----------|----------|
+| Columns renamed (`Dev Owner`, `Remarks`, `Go-Live`, `#`) | Matched by alias, ignoring case, spaces and punctuation |
+| Title rows or notes pasted above the table | The header row is the one that matches the most known columns, searched over the first 15 rows |
+| No column named for the key | A column whose values look like `CISGL-2412` is used instead |
+| Several region tabs in one workbook | Every tab is read and reported separately: `NA_GL: 108/108 rows → NA_GL`. A file holding one tab is compared on that tab only, and the preview says so |
+| `about`, `summary`, and `_tree` worksheets | Skipped, and listed as skipped, so tree sheets cannot double-count |
+| Backlogs that are not in this report | Reported as unmatched and left out, never inserted |
+| Empty cells | Ignored. An upload can add or change a value but never clears one |
+| Only the spacing or casing differs | Counted as identical, not offered as a change |
+| Real dates, or numbers stored as floats | Normalized to `YYYY-MM-DD` and whole numbers before comparing |
+| Worksheet named after a region sheet | Its rows are pinned to that sheet, ranking included |
+| A key that lives in `NA_AR` **and** `NA_AR+GL` | Text goes to both; ranking is held back with a warning, because rank only means something inside one sheet |
+
+Jira-owned columns in the file — status, NDP, hours, assignee — are read past and never
+compared. Jira stays the source of truth for those, so an old copy cannot roll them back.
+
+## Bringing an old spreadsheet up to date
+
+The analyzer above pulls a file's edits **into** the platform. This does the opposite,
+for the case where the file is what everyone is working in and it is the file that has
+gone stale.
+
+> A report was exported and shared a week ago. Since then the TPM and the stakeholders
+> have ranked it, commented on it and highlighted rows — but Jira has moved on too.
+> Statuses advanced, an NDP was approved, `CISGL-2556` was raised and did not exist when
+> the file was made, and one backlog was dropped. The spreadsheet everyone is working in
+> is now wrong about Jira and right about everything else.
+
+**Updater** in the top nav (or **Update spreadsheet** next to Edit) takes that file and
+gives it back with only the Jira columns rewritten.
+
+```mermaid
+flowchart LR
+  Drop["Drop the old export"] --> Match["Match sheets, rows and columns"]
+  Match --> Diff["Compare Jira columns with the platform"]
+  Diff --> Review["Preview: in your file vs now in Jira"]
+  Review --> Pick["Choose columns, additions, flags"]
+  Pick --> Down["Download the same workbook, updated"]
+```
+
+| What it does | Detail |
+|--------------|--------|
+| **Refreshes Jira columns** | Status, NDP, NDP Status, NDP Deploy Date, Release, Summary, Assignee, Est h, Spent h and the rest. Tick only the columns you want; every one is listed with the number of cells behind it |
+| **Adds what was raised since** | Backlogs the platform has and the file does not are appended at the bottom of their sheet, styled like the rows above them, with the user columns left empty |
+| **Flags what Jira dropped** | Rows the report no longer returns, or that went archived, are kept exactly as they are and marked in an `Update Status` column — nothing is ever deleted, because people's comments live on those rows |
+| **Leaves your work alone** | Rank, Developer, UAT ETA, PROD ETA, Comments are never written. Fills, fonts, column widths, formulas, merged cells and conditional formatting survive the round trip |
+| **Sections the preview by tab** | Changes are grouped under the worksheet they came from — `NA_GL`, `LAC_GL`, and for AR_GL all six — never interleaved into one flat list. Each section counts its cells and its status moves |
+| **Tags what kind of change it is** | Backlogs the file has never seen are tagged **New** in green, on a green panel. Movement in Status or NDP Status is tagged **Status Update** in the same amber as *IT Exec Approved*. Rows Jira stopped returning are tagged **Removed** |
+| **Records what it did** | An `update log` sheet lists every cell it changed, was → now, plus the counts and the Jira timestamp behind them |
+| **Colors NDP status** | A refreshed NDP Status cell is refilled with the skill's palette, so an approval is visible at a glance |
+| **Re-stamps the timestamp** | An `about` or `summary` sheet claiming an old "Jira last updated" is corrected |
+
+The comparison ignores cosmetic differences — whitespace, casing, `8` against `8.0`, a
+real date against a typed one — so the preview only lists cells that genuinely disagree.
+Running the updater on a file it has already refreshed finds nothing left to do.
+
+**Two things to know.** The Jira data used is whatever the last sync pulled, so press
+**Update from Jira** on the table first if that timestamp looks old; the preview shows it.
+And openpyxl rewrites the workbook, which preserves everything above but drops embedded
+charts and images — keep those in a separate file.
+
 ## Resolved questions
 
 | # | Question | Decision |
@@ -356,7 +495,7 @@ numbered by their position in Jira order rather than shown as zero.
 | 3 | Who can click "Update" | Anyone. It only refreshes Jira data and cannot touch snapshots. |
 | 4 | Ranking scope | Per sheet, inside a snapshot. |
 | 5 | MVP users | Small team; add each member on the Users page. |
-| 6 | Quarter handling | Switchable. Quarter is part of every route and API call; default `2026Q3`. |
+| 6 | Quarter handling | Switchable, and new quarters are opened from the UI. Quarter is part of every route and API call; default `2026Q3`. |
 
 ---
 
@@ -429,7 +568,16 @@ every table.
 cd backend
 py verify_parity.py 2026Q3    # per-sheet counts vs the skill's Excel + internal invariants
 py test_snapshots.py          # groups, identity check, and snapshots surviving a Jira refresh
+py test_analyzer.py           # analyzer parsing and diff rules; needs no server
+py test_analyzer_api.py       # export -> renamed copy -> preview -> partial apply
+py test_updater.py            # refresh keeps edits, ranks and highlighting; needs no server
+py test_updater_api.py        # export -> aged copy -> refreshed download
+py test_quarters.py           # opening, using and removing a quarter
 ```
+
+The `_api` scripts and `test_snapshots.py` call a running app on port 8000 and clean up
+after themselves. Set `BACKLOG_API=http://127.0.0.1:9000` to point them at a different
+port.
 
 `verify_parity.py` also asserts invariants the Excel files cannot: `NA_AR+GL` must equal
 `NA_AR` united with `NA_GL`, and each sheet must be identical across the reports
@@ -471,3 +619,5 @@ omit it, because a single short response would otherwise flag live backlogs as s
 - [x] Editing requires group membership; the Save button names the editor's role
 - [x] SE / TPM / DEV views with a full snapshot history by date and time
 - [x] Audit log captures all user edits with role and snapshot
+- [x] A circulated Excel copy can be uploaded, previewed against a view, and merged in part
+- [x] A stale exported report can be refreshed in place, keeping ranks, comments and highlighting

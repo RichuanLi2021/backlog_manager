@@ -1,3 +1,4 @@
+import re
 from datetime import datetime
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Response
@@ -10,6 +11,7 @@ from ..models import BacklogSnapshot, Report, ReportSnapshot, SyncJob
 from ..schemas import (
     BacklogRow,
     ReportDetail,
+    QuarterCreate,
     ReportInfo,
     SyncStatus,
     TreeBacklog,
@@ -23,6 +25,10 @@ from .snapshots import latest_snapshot, newest_snapshot, snapshot_values, to_inf
 router = APIRouter(prefix="/api", tags=["reports"])
 
 SHEET_ORDER = ["NA_AR", "NA_GL", "NA_AR+GL", "LAC_AR", "LAC_GL", "LAC_AR+GL"]
+
+# The name is substituted into the skill's JQL, where NA matches it against
+# "Request Qtr" and LAC against a label, so it has to be written their way.
+QUARTER_PATTERN = re.compile(r"^\d{4}Q[1-4]$")
 
 # Used until a report has been synced before and can be timed from history.
 DEFAULT_ESTIMATES = {"ALL": 150, "AR_GL": 95, "AR": 30, "GL": 45}
@@ -80,9 +86,70 @@ def list_reports(
 
 @router.get("/quarters", response_model=list[str])
 def list_quarters(db: Session = Depends(get_db)):
+    # Reports are included so a quarter that has been opened but never synced still
+    # shows up; without it a new quarter would be invisible until it had rows.
     known = set(db.scalars(select(BacklogSnapshot.quarter).distinct()))
+    known.update(db.scalars(select(Report.quarter).distinct()))
     known.add(DEFAULT_QUARTER)
     return sorted(known, reverse=True)
+
+
+def _clean_quarter(value: str) -> str:
+    quarter = "".join(value.split()).upper()
+    if not QUARTER_PATTERN.match(quarter):
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"'{value}' is not a quarter name. Use four digits, Q, then 1-4, "
+                "for example 2026Q4. The name goes straight into the Jira query, "
+                "so it has to match the way Request Qtr and the LAC labels are written."
+            ),
+        )
+    return quarter
+
+
+@router.post("/quarters", response_model=list[str])
+def add_quarter(body: QuarterCreate, db: Session = Depends(get_db)):
+    """Open an empty quarter. It stays empty until someone runs Update from Jira."""
+    quarter = _clean_quarter(body.quarter)
+    if quarter in list_quarters(db):
+        raise HTTPException(status_code=409, detail=f"{quarter} is already on the list.")
+
+    for kind in REPORT_SPECS:
+        db.add(Report(kind=kind, quarter=quarter))
+    db.commit()
+    return list_quarters(db)
+
+
+@router.delete("/quarters/{quarter}", response_model=list[str])
+def delete_quarter(quarter: str, db: Session = Depends(get_db)):
+    """Undo an opened quarter, but only while nothing has been put in it."""
+    quarter = _clean_quarter(quarter)
+    if quarter == DEFAULT_QUARTER:
+        raise HTTPException(
+            status_code=409,
+            detail=f"{quarter} is the default quarter and is always on the list.",
+        )
+
+    rows = db.scalar(
+        select(func.count(BacklogSnapshot.id)).where(BacklogSnapshot.quarter == quarter)
+    )
+    saves = db.scalar(
+        select(func.count(ReportSnapshot.id)).where(ReportSnapshot.quarter == quarter)
+    )
+    if rows or saves:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"{quarter} holds {rows} backlog row(s) and {saves} save(s), so it is "
+                "not empty. Only a quarter nothing has been put in can be removed."
+            ),
+        )
+
+    for report in db.scalars(select(Report).where(Report.quarter == quarter)):
+        db.delete(report)
+    db.commit()
+    return list_quarters(db)
 
 
 def _rows(

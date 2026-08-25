@@ -17,6 +17,8 @@ export default function App() {
                 Table
               </NavLink>
               <NavLink to={`/reports/${kind}/${quarter}/tree`}>Tree</NavLink>
+              <NavLink to={`/reports/${kind}/${quarter}/analyze`}>Analyzer</NavLink>
+              <NavLink to={`/reports/${kind}/${quarter}/update-file`}>Updater</NavLink>
             </>
           )}
           <NavLink to="/admin/users">Users</NavLink>

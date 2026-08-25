@@ -564,6 +564,495 @@ td.changed {
   box-shadow: inset 2px 0 0 #e0a800;
 }
 
+.analyzer {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  overflow: auto;
+}
+
+.analyzer-setup {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 18px;
+  padding: 16px;
+}
+
+.step {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+}
+
+.step > div {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  align-items: flex-start;
+  min-width: 0;
+  flex: 1;
+}
+
+.step-no {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  flex: none;
+  border-radius: 50%;
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.step-title {
+  font-weight: 600;
+}
+
+.dropzone {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  padding: 18px 12px;
+  border: 1px dashed var(--border-strong);
+  border-radius: var(--radius);
+  background: #fbfcfe;
+  cursor: pointer;
+  text-align: center;
+}
+
+.dropzone.over {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.dropzone.locked {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.analyzer-summary {
+  padding: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.summary-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: 10px;
+}
+
+.summary-grid > div {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  /* Grid items default to min-width:auto, so a long unbroken file name pushes
+     past its column and lands on top of the next one. */
+  min-width: 0;
+}
+
+.summary-grid > div > strong,
+.summary-grid > div > span {
+  overflow-wrap: anywhere;
+}
+
+.summary-notes {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  border-top: 1px solid var(--border);
+  padding-top: 10px;
+}
+
+.summary-notes .badge {
+  margin-right: 4px;
+}
+
+.diff-summary {
+  padding: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.diff-stats {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.diff-stats .stat {
+  font-weight: 600;
+  padding: 2px 9px;
+  border-radius: 12px;
+  border: 1px solid transparent;
+}
+
+.stat.add {
+  color: #14683f;
+  background: #e6f4ec;
+  border-color: #b7dfc8;
+}
+
+.stat.mod {
+  color: #8a5a00;
+  background: #fff6e0;
+  border-color: #f0dca8;
+}
+
+.stat.same {
+  color: var(--muted);
+  background: #f2f4f7;
+  border-color: var(--border);
+}
+
+.stat.gone {
+  color: var(--danger);
+  background: #fdf0f0;
+  border-color: #e0b4b4;
+}
+
+.diff-base {
+  border-top: 1px solid var(--border);
+  padding-top: 10px;
+}
+
+.diff-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  overflow: auto;
+  padding-bottom: 4px;
+}
+
+.diff-row {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  overflow: hidden;
+}
+
+.diff-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  background: #eef1f6;
+  border-bottom: 1px solid var(--border);
+}
+
+.diff-title {
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+  flex: 1;
+}
+
+.diff-origin {
+  flex: none;
+  font-size: 11px;
+}
+
+.diff-field {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 8px 12px;
+  border-top: 1px solid var(--border);
+}
+
+.diff-field:first-of-type {
+  border-top: none;
+}
+
+.diff-field.skipped {
+  opacity: 0.5;
+}
+
+.diff-name {
+  flex: none;
+  width: 130px;
+  font-weight: 600;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.diff-name .tag {
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  padding: 1px 5px;
+  border-radius: 8px;
+}
+
+.tag.added {
+  color: #14683f;
+  background: #e6f4ec;
+}
+
+.tag.changed {
+  color: #8a5a00;
+  background: #fff6e0;
+}
+
+.diff-values {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.diff-line {
+  display: flex;
+  gap: 8px;
+  padding: 3px 8px;
+  border-radius: 4px;
+  font-family: 'Cascadia Mono', Consolas, 'Courier New', monospace;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.diff-line .mark {
+  flex: none;
+  width: 10px;
+  font-weight: 700;
+  opacity: 0.7;
+}
+
+.diff-line.old {
+  background: #fdecec;
+  color: #7d2b2b;
+}
+
+.diff-line.new {
+  background: #e9f6ee;
+  color: #14683f;
+}
+
+.diff-line em {
+  opacity: 0.6;
+}
+
+.diff-field.skipped .diff-line {
+  background: #f5f6f8;
+  color: var(--muted);
+}
+
+.diff-context {
+  padding: 6px 12px;
+  border-top: 1px solid var(--border);
+  color: var(--muted);
+  font-size: 12px;
+  background: #fafbfd;
+}
+
+/* Tag palette shared by both spreadsheet pages. Green marks a backlog the file has
+   never seen; orange is the "IT Exec Approved" amber, reused for status movement. */
+.badge.tag-new {
+  background: var(--ndp-verified);
+  border-color: #9ed4b0;
+  color: #14683f;
+  font-weight: 600;
+}
+
+.badge.tag-status {
+  background: var(--ndp-exec);
+  border-color: #e0b94a;
+  color: #7a5600;
+  font-weight: 600;
+}
+
+.badge.tag-gone {
+  background: #fdf0f0;
+  border-color: #e0b4b4;
+  color: var(--danger);
+  font-weight: 600;
+}
+
+.row-notes {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+  gap: 14px;
+}
+
+.notes-card {
+  padding: 12px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+}
+
+/* The new backlogs are the point of the whole exercise, so the panel carries the
+   same green as the tag rather than sitting in the default surface. */
+.notes-card.is-new {
+  background: #f2fbf5;
+  border-color: #b7dfc8;
+}
+
+.notes-card.is-gone {
+  background: #fdf7f7;
+  border-color: #e6cccc;
+}
+
+.notes-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 600;
+}
+
+.notes-sheet {
+  font-weight: 600;
+  color: var(--muted);
+  margin-top: 4px;
+}
+
+.row-notes ul {
+  margin: 4px 0 0;
+  padding-left: 18px;
+}
+
+.notes-scroll {
+  max-height: 260px;
+  overflow: auto;
+  min-width: 0;
+}
+
+.row-notes li {
+  padding: 3px 0;
+}
+
+.row-notes li .badge {
+  margin-left: 4px;
+}
+
+.sheet-section {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+  overflow: hidden;
+}
+
+.sheet-head.standalone {
+  border: 1px solid var(--border);
+  border-radius: var(--radius) var(--radius) 0 0;
+  border-bottom: none;
+  margin-bottom: 0;
+}
+
+.sheet-head.standalone + .diff-list {
+  border: 1px solid var(--border);
+  border-top: none;
+  border-radius: 0 0 var(--radius) var(--radius);
+  padding: 10px;
+  background: #f7f8fa;
+}
+
+.sheet-section > .sheet-head,
+.sheet-head.standalone {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  background: #eef1f6;
+  border-bottom: 1px solid var(--border);
+  font-weight: 600;
+}
+
+.sheet-section .table-wrap {
+  border: none;
+  border-radius: 0;
+  max-height: 420px;
+}
+
+.sheet-groups {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-height: 0;
+}
+
+a.button.primary-link {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+
+a.button.primary-link:hover {
+  background: #2450c4;
+}
+
+.warning-inline {
+  color: #8a5a00;
+}
+
+.warning {
+  color: #8a5a00;
+  background: #fff8e1;
+  border: 1px solid #f0dca8;
+  border-radius: 6px;
+  padding: 5px 8px;
+}
+
+.analyzer-actions {
+  flex-wrap: wrap;
+}
+
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 9px;
+  border: 1px solid var(--border-strong);
+  border-radius: 14px;
+  background: var(--surface);
+  cursor: pointer;
+  user-select: none;
+}
+
+.analyzer .table-wrap {
+  flex: none;
+  max-height: 60vh;
+}
+
+table.grid tr.skipped td {
+  color: var(--muted);
+  background: #fafafb;
+  text-decoration: line-through;
+}
+
+td.change-old {
+  color: var(--muted);
+}
+
+td.change-new {
+  background: #f1f8f3;
+  box-shadow: inset 2px 0 0 var(--ok);
+}
+
+table.grid tr.skipped td.change-new {
+  background: #fafafb;
+  box-shadow: none;
+}
+
 .tree {
   flex: 1;
   min-height: 0;

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { useParams } from 'react-router-dom'
+import { Link, useParams } from 'react-router-dom'
 
 import { exportUrl, getReport, listSnapshots, saveSnapshot } from '../api'
 import AuditDrawer from '../components/AuditDrawer'
@@ -248,7 +248,23 @@ export default function ReportPage() {
             onChange={(e) => setGlobalFilter(e.target.value)}
           />
           {!editing ? (
-            <button onClick={() => setPromptOpen(true)}>Edit</button>
+            <>
+              <button onClick={() => setPromptOpen(true)}>Edit</button>
+              <Link
+                className="button"
+                to={`/reports/${kind}/${quarter}/analyze`}
+                title="Upload a circulated Excel copy and merge the parts you want"
+              >
+                Import spreadsheet
+              </Link>
+              <Link
+                className="button"
+                to={`/reports/${kind}/${quarter}/update-file`}
+                title="Refresh an old exported report without losing the work done on it"
+              >
+                Update spreadsheet
+              </Link>
+            </>
           ) : (
             <div className="edit-bar">
               <span className="badge editing">
@@ -353,6 +369,10 @@ export default function ReportPage() {
           status === ALL_STATUS ? undefined : status,
         )}
         exportLabel={`Download ${sheet}${status === ALL_STATUS ? '' : ` (${status})`} as it stands in the ${view === 'LIVE' ? 'live' : view} view`}
+        // Every region sheet in one workbook, which is what the Analyzer and the
+        // Updater need to cover more than the tab you happen to be looking at.
+        exportAllHref={exportUrl(kind, quarter, view, activeSnapshot?.id ?? null)}
+        exportAllLabel={`Download all ${detail?.sheets.length ?? 0} region sheets in one workbook, for sharing or for the Analyzer and Updater`}
       />
 
       {promptOpen && (

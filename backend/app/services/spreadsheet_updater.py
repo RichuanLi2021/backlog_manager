@@ -50,6 +50,7 @@ MARKER_HEADER = "Update Status"
 LOG_SHEET = "update log"
 
 NUMERIC = {"est_h", "spent_h"}
+INTEGER = {"rank"}
 
 FIELD_LABELS = {
     "release": "Release",
@@ -91,6 +92,8 @@ class Target:
 
 def _platform_text(row: BacklogRow, name: str) -> str:
     value = getattr(row, name)
+    if name in INTEGER:
+        return str(int(value)) if int(value or 0) else ""
     if name in NUMERIC:
         number = float(value or 0)
         return str(int(number)) if number.is_integer() else str(number)
@@ -267,7 +270,7 @@ def plan_update(
     fields: tuple[str, ...] = JIRA_FIELDS,
 ) -> FileUpdatePlan:
     """Report what refreshing this file from the platform would change, without writing."""
-    layout = read_layouts(data, filename, JIRA_FIELDS, ALL_ALIASES)
+    layout = read_layouts(data, filename, fields, ALL_ALIASES)
     plan, _ = _plan_from(layout, filename, current, kind, quarter, last_sync, fields)
     return plan
 
@@ -291,6 +294,8 @@ def _write_cell(ws, row: int, column: int, name: str, value: str):
     cell = ws.cell(row=row, column=column)
     if name in NUMERIC:
         cell.value = float(value or 0)
+    elif name in INTEGER:
+        cell.value = int(value) if value else None
     else:
         # A field Jira no longer has a value for should leave a blank cell, not an
         # empty string, so filters and COUNTA in the file behave as people expect.
@@ -324,7 +329,7 @@ def build_updated_workbook(
     flag_gone: bool = True,
 ) -> tuple[bytes, FileUpdatePlan]:
     """Write the refreshed workbook, returning the bytes and what was done to it."""
-    layout = read_layouts(data, filename, JIRA_FIELDS, ALL_ALIASES)
+    layout = read_layouts(data, filename, fields, ALL_ALIASES)
     plan, targets = _plan_from(layout, filename, current, kind, quarter, last_sync, fields)
     try:
         wb = load_workbook(BytesIO(data))

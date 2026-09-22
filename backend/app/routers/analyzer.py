@@ -8,6 +8,7 @@ Each direction previews before it commits. Nothing is written to the database, a
 no workbook is returned, until the second call says which parts were accepted.
 """
 
+import json
 from datetime import datetime
 from time import perf_counter
 
@@ -22,6 +23,8 @@ from ..schemas import (
     AnalysisResult,
     AnalyzedSheet,
     ApplyAnalysisRequest,
+    ApplyChange,
+    BacklogRow,
     FileUpdatePlan,
     SnapshotInfo,
     UserInfo,
@@ -215,17 +218,10 @@ async def analyze_spreadsheet(
     )
 
 
-@router.post("/reports/{kind}/{quarter}/analyze/apply", response_model=SnapshotInfo)
-def apply_analysis(
-    kind: str, quarter: str, body: ApplyAnalysisRequest, db: Session = Depends(get_db)
-):
-    """Save the accepted changes as a new snapshot of the chosen role's view."""
-    _scope(kind)
-    user = _editor(db, body.author_email)
-    role = _target(body.target_role)
-
-    accepted: dict[tuple[str, str], dict[str, str | int]] = {}
-    for change in body.changes:
+def _accepted(changes: list[ApplyChange]) -> dict[tuple[str, str], dict[str, str | int]]:
+    """The subset of the diff the reviewer kept, keyed by the row it belongs to."""
+    out: dict[tuple[str, str], dict[str, str | int]] = {}
+    for change in changes:
         if change.field not in USER_FIELDS:
             raise HTTPException(status_code=400, detail=f"unknown field: {change.field}")
         value: str | int = change.value
@@ -237,23 +233,64 @@ def apply_analysis(
                     status_code=400,
                     detail=f"{change.key}: rank '{change.value}' is not a number.",
                 ) from None
-        accepted.setdefault((change.sheet, change.key), {})[change.field] = value
-    if not accepted:
+        out.setdefault((change.sheet, change.key), {})[change.field] = value
+    if not out:
         raise HTTPException(status_code=400, detail="No changes were selected.")
+    return out
 
-    base = latest_snapshot(db, kind, quarter, role)
-    if body.based_on_id is not None:
-        base = db.get(ReportSnapshot, body.based_on_id)
-        if base is None:
-            raise HTTPException(status_code=404, detail="snapshot not found")
-        if (base.report_kind, base.quarter, base.role) != (kind, quarter, role):
-            raise HTTPException(
-                status_code=400,
-                detail=(
-                    f"snapshot {base.id} belongs to {base.report_kind} {base.quarter} "
-                    f"{base.role}, not {kind} {quarter} {role}."
-                ),
-            )
+
+def _base_snapshot(db: Session, kind: str, quarter: str, role: str, based_on_id: int | None):
+    if based_on_id is None:
+        return latest_snapshot(db, kind, quarter, role)
+    base = db.get(ReportSnapshot, based_on_id)
+    if base is None:
+        raise HTTPException(status_code=404, detail="snapshot not found")
+    if (base.report_kind, base.quarter, base.role) != (kind, quarter, role):
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"snapshot {base.id} belongs to {base.report_kind} {base.quarter} "
+                f"{base.role}, not {kind} {quarter} {role}."
+            ),
+        )
+    return base
+
+
+def _merged(db: Session, kind: str, quarter: str, base, accepted) -> list[BacklogRow]:
+    """The target view with the accepted values laid over it — the agreed outcome.
+
+    The same rows drive both destinations: the snapshot written to the database and
+    the workbook handed back to whoever uploaded it, so the file and the view cannot
+    end up disagreeing about what was decided.
+    """
+    rows = _rows(db, kind, quarter, include_archived=True, snapshot=base)
+    known = {(row.sheet, row.key) for row in rows}
+    unknown = sorted({f"{s}/{k}" for s, k in accepted if (s, k) not in known})
+    if unknown:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"{len(unknown)} row(s) are no longer in this report: "
+                f"{', '.join(unknown[:5])}. Re-run the analysis and try again."
+            ),
+        )
+    for row in rows:
+        for name, value in accepted.get((row.sheet, row.key), {}).items():
+            setattr(row, name, value)
+    return rows
+
+
+@router.post("/reports/{kind}/{quarter}/analyze/apply", response_model=SnapshotInfo)
+def apply_analysis(
+    kind: str, quarter: str, body: ApplyAnalysisRequest, db: Session = Depends(get_db)
+):
+    """Save the accepted changes as a new snapshot of the chosen role's view."""
+    _scope(kind)
+    user = _editor(db, body.author_email)
+    role = _target(body.target_role)
+
+    accepted = _accepted(body.changes)
+    base = _base_snapshot(db, kind, quarter, role, body.based_on_id)
     # The whole view is rewritten, so the snapshot stays complete on its own: rows the
     # upload never touched keep the values and order the target view already had.
     current = _rows(db, kind, quarter, include_archived=True, snapshot=base)
@@ -317,6 +354,91 @@ def apply_analysis(
 
     db.commit()
     return to_info(db, snap)
+
+
+def _writeback(
+    db: Session, kind: str, quarter: str, author_email: str, target_role: str, changes: str
+):
+    """Shared setup for previewing and downloading the reviewer's own file, updated."""
+    _scope(kind)
+    _editor(db, author_email)
+    role = _target(target_role)
+    try:
+        raw = json.loads(changes or "[]")
+        parsed = [ApplyChange.model_validate(item) for item in raw]
+    except (ValueError, TypeError) as exc:
+        raise HTTPException(status_code=400, detail=f"changes is not valid: {exc}") from exc
+
+    accepted = _accepted(parsed)
+    base = _base_snapshot(db, kind, quarter, role, None)
+    return role, _merged(db, kind, quarter, base, accepted)
+
+
+@router.post("/reports/{kind}/{quarter}/analyze/file-preview", response_model=FileUpdatePlan)
+async def preview_updated_file(
+    kind: str,
+    quarter: str,
+    file: UploadFile = File(...),
+    author_email: str = Form(...),
+    target_role: str = Form(...),
+    changes: str = Form(default="[]"),
+    db: Session = Depends(get_db),
+):
+    """What the uploaded workbook itself would look like once the changes are applied."""
+    data = await _bytes_of(file)
+    role, merged = _writeback(db, kind, quarter, author_email, target_role, changes)
+    try:
+        return spreadsheet_updater.plan_update(
+            data,
+            file.filename or "upload.xlsx",
+            merged,
+            kind,
+            quarter,
+            None,
+            USER_FIELDS,
+        )
+    except AnalyzerError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.post("/reports/{kind}/{quarter}/analyze/file-download")
+async def download_updated_file(
+    kind: str,
+    quarter: str,
+    file: UploadFile = File(...),
+    author_email: str = Form(...),
+    target_role: str = Form(...),
+    changes: str = Form(default="[]"),
+    db: Session = Depends(get_db),
+):
+    """The uploaded workbook with its user columns set to the agreed outcome."""
+    data = await _bytes_of(file)
+    name = file.filename or "upload.xlsx"
+    role, merged = _writeback(db, kind, quarter, author_email, target_role, changes)
+    try:
+        updated, _plan = spreadsheet_updater.build_updated_workbook(
+            data,
+            name,
+            merged,
+            kind,
+            quarter,
+            None,
+            USER_FIELDS,
+            # Adding or flagging rows is the Updater's job; this only settles the
+            # columns people type into, so the file keeps exactly the rows it had.
+            add_new=False,
+            flag_gone=False,
+        )
+    except AnalyzerError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    stem = name.rsplit(".", 1)[0] or "backlog"
+    filename = f"{stem}_{role}_{datetime.now():%Y%m%d_%H%M}.xlsx"
+    return Response(
+        content=updated,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
 
 
 def _fields(selected: str | None) -> tuple[str, ...]:

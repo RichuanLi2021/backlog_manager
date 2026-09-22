@@ -1,6 +1,7 @@
 import type {
   AnalysisResult,
   ApplyChange,
+  // FileUpdatePlan is reused for the write-back preview: same shape, other direction.
   AuditEntry,
   BacklogRow,
   CompareWith,
@@ -167,27 +168,9 @@ export function planFileRefresh(
   return upload<FileUpdatePlan>(`/reports/${kind}/${quarter}/refresh-file`, form)
 }
 
-/** Posts the file back and hands the refreshed workbook to the browser to save. */
-export async function downloadRefreshedFile(
-  kind: string,
-  quarter: string,
-  file: File,
-  authorEmail: string,
-  fields: string[],
-  addNew: boolean,
-  flagGone: boolean,
-): Promise<string> {
-  const form = new FormData()
-  form.append('file', file)
-  form.append('author_email', authorEmail)
-  form.append('fields', fields.join(','))
-  form.append('add_new', String(addNew))
-  form.append('flag_gone', String(flagGone))
-
-  const res = await fetch(`/api/reports/${kind}/${quarter}/refresh-file/download`, {
-    method: 'POST',
-    body: form,
-  })
+/** Posts a form and hands the workbook that comes back to the browser to save. */
+async function saveResponse(path: string, form: FormData): Promise<string> {
+  const res = await fetch(`/api${path}`, { method: 'POST', body: form })
   if (!res.ok) {
     const detail = await res.json().catch(() => null)
     throw new Error(detail?.detail ?? `${res.status} ${res.statusText}`)
@@ -205,6 +188,65 @@ export async function downloadRefreshedFile(
   URL.revokeObjectURL(url)
   return name
 }
+
+export function downloadRefreshedFile(
+  kind: string,
+  quarter: string,
+  file: File,
+  authorEmail: string,
+  fields: string[],
+  addNew: boolean,
+  flagGone: boolean,
+): Promise<string> {
+  const form = new FormData()
+  form.append('file', file)
+  form.append('author_email', authorEmail)
+  form.append('fields', fields.join(','))
+  form.append('add_new', String(addNew))
+  form.append('flag_gone', String(flagGone))
+  return saveResponse(`/reports/${kind}/${quarter}/refresh-file/download`, form)
+}
+
+function writebackForm(
+  file: File,
+  authorEmail: string,
+  targetRole: EditableRole,
+  changes: ApplyChange[],
+): FormData {
+  const form = new FormData()
+  form.append('file', file)
+  form.append('author_email', authorEmail)
+  form.append('target_role', targetRole)
+  form.append('changes', JSON.stringify(changes))
+  return form
+}
+
+/** What the uploaded workbook itself would look like once the changes are applied. */
+export const previewUpdatedFile = (
+  kind: string,
+  quarter: string,
+  file: File,
+  authorEmail: string,
+  targetRole: EditableRole,
+  changes: ApplyChange[],
+) =>
+  upload<FileUpdatePlan>(
+    `/reports/${kind}/${quarter}/analyze/file-preview`,
+    writebackForm(file, authorEmail, targetRole, changes),
+  )
+
+export const downloadUpdatedFile = (
+  kind: string,
+  quarter: string,
+  file: File,
+  authorEmail: string,
+  targetRole: EditableRole,
+  changes: ApplyChange[],
+) =>
+  saveResponse(
+    `/reports/${kind}/${quarter}/analyze/file-download`,
+    writebackForm(file, authorEmail, targetRole, changes),
+  )
 
 export const identifyUser = (identifier: string) =>
   request<UserInfo>('/users/identify', {

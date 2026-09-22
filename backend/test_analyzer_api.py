@@ -45,7 +45,7 @@ def call(method, path, body=None, admin=False, raw=False):
         return {"__error__": e.code, "detail": json.loads(e.read().decode()).get("detail")}
 
 
-def post_file(path, filename, blob, fields):
+def post_file(path, filename, blob, fields, raw=False):
     """Multipart by hand, so the test needs nothing outside the standard library."""
     boundary = uuid.uuid4().hex
     parts = [
@@ -66,7 +66,8 @@ def post_file(path, filename, blob, fields):
     )
     try:
         with urllib.request.urlopen(req, timeout=120) as r:
-            return json.loads(r.read().decode())
+            payload = r.read()
+            return payload if raw else json.loads(payload.decode())
     except urllib.error.HTTPError as e:
         return {"__error__": e.code, "detail": json.loads(e.read().decode()).get("detail")}
 
@@ -135,6 +136,82 @@ def every_sheet_is_covered(failures):
             failures.append(f"{kind}: rows read but not matched: {unmatched}")
         print(f"{kind}: {len(covered)} tabs read, "
               + ", ".join(f"{s['name']} {s['matched']}" for s in covered.values()))
+
+
+def write_back_settles_the_file(failures, keys):
+    """A kept change stays in the file; a discarded one goes back to the view's value.
+
+    The point of writing back is that the reviewer's copy and the view they saved end
+    up saying the same thing, so the discarded half matters as much as the kept half.
+    """
+    blob = call("GET", f"/reports/{KIND}/{QUARTER}/export?sheet={SHEET}", raw=True)
+    source = load_workbook(BytesIO(blob))[SHEET]
+    headers = [c.value for c in source[1]]
+    key_col, comment_col = headers.index("Backlog Key"), headers.index("Comments")
+
+    wb = load_workbook(BytesIO(blob))
+    ws = wb[SHEET]
+    rows = {ws.cell(row=r, column=key_col + 1).value: r for r in range(2, ws.max_row + 1)}
+    keep, drop = keys[0], keys[1]
+    ws.cell(row=rows[keep], column=comment_col + 1).value = "keep this one"
+    ws.cell(row=rows[drop], column=comment_col + 1).value = "discard this one"
+    buffer = BytesIO()
+    wb.save(buffer)
+    edited = buffer.getvalue()
+
+    upload = {"author_email": USER["email"], "target_role": "SE", "compare_with": "LIVE"}
+    result = post_file(f"/reports/{KIND}/{QUARTER}/analyze", "wb.xlsx", edited, upload)
+    if "__error__" in result:
+        failures.append(f"write-back analyze failed: {result}")
+        return
+
+    # Keep the first backlog's comment, leave the second one out of the selection.
+    kept = [
+        {"sheet": r["sheet"], "key": r["key"], "field": c["field"], "value": c["incoming"]}
+        for r in result["rows"]
+        for c in r["changes"]
+        if r["key"] == keep and c["field"] == "comments"
+    ]
+    if not kept:
+        failures.append("the comment meant to be kept was not offered as a change")
+        return
+
+    body = {**upload, "changes": json.dumps(kept)}
+    plan = post_file(f"/reports/{KIND}/{QUARTER}/analyze/file-preview", "wb.xlsx", edited, body)
+    if "__error__" in plan:
+        failures.append(f"file preview failed: {plan}")
+        return
+    touched = {(c["key"], c["field"]) for c in plan["changes"]}
+    check(failures, (drop, "comments") in touched,
+          f"the discarded comment should be reverted in the file: {sorted(touched)[:5]}")
+    check(failures, (keep, "comments") not in touched,
+          "the kept comment should not be rewritten, it is already right")
+    print(f"file preview: {len(plan['changes'])} cells would change, "
+          f"discarded {drop} reverts, kept {keep} stays")
+
+    written = post_file(
+        f"/reports/{KIND}/{QUARTER}/analyze/file-download", "wb.xlsx", edited, body, raw=True
+    )
+    if isinstance(written, dict):
+        failures.append(f"file download failed: {written}")
+        return
+    out = load_workbook(BytesIO(written))[SHEET]
+    back = {out.cell(row=r, column=key_col + 1).value: r for r in range(2, out.max_row + 1)}
+    check(failures,
+          out.cell(row=back[keep], column=comment_col + 1).value == "keep this one",
+          "the kept comment did not survive into the downloaded file")
+    check(failures,
+          out.cell(row=back[drop], column=comment_col + 1).value != "discard this one",
+          "the discarded comment was left in the downloaded file")
+    check(failures, len(back) == len(rows),
+          f"the file gained or lost rows: {len(back)} vs {len(rows)}")
+    print(f"file download: {len(written)} bytes, {len(back)} rows, kept and discarded "
+          "both settled")
+
+
+def check(failures, condition, message):
+    if not condition:
+        failures.append(message)
 
 
 def main():
@@ -250,6 +327,8 @@ def main():
     )
     if bad.get("__error__") != 400:
         failures.append(f"an unknown baseline should be refused, got {bad}")
+
+    write_back_settles_the_file(failures, keys)
 
     live = call("GET", f"/reports/{KIND}/{QUARTER}")
     if any(r["developer"] or r["comments"] for r in live["items"]):

@@ -119,6 +119,9 @@ def compare(parsed: ParsedWorkbook, current: list[BacklogRow]) -> Comparison:
     result = Comparison()
     taken: dict[tuple[str, str], str] = {}
     ambiguous: set[str] = set()
+    # One line per pair of worksheets, not one per backlog: a priority list covering
+    # the same rows as its region sheet would otherwise bury the real warnings.
+    overlaps: dict[tuple[str, str], list[str]] = {}
 
     for parsed_row in parsed.rows:
         candidates = by_key.get(parsed_row.key)
@@ -139,9 +142,8 @@ def compare(parsed: ParsedWorkbook, current: list[BacklogRow]) -> Comparison:
             result.targets_by_sheet.setdefault(parsed_row.source_sheet, set()).add(target.sheet)
             spot = (target.sheet, target.key)
             if spot in taken and taken[spot] != parsed_row.source_sheet:
-                result.warnings.append(
-                    f"{target.key} appears in both '{taken[spot]}' and "
-                    f"'{parsed_row.source_sheet}'; the later sheet was used."
+                overlaps.setdefault((taken[spot], parsed_row.source_sheet), []).append(
+                    target.key
                 )
             taken[spot] = parsed_row.source_sheet
 
@@ -195,6 +197,12 @@ def compare(parsed: ParsedWorkbook, current: list[BacklogRow]) -> Comparison:
                     )
                 )
 
+    for (first, second), keys in sorted(overlaps.items()):
+        shown = ", ".join(keys[:8]) + (", ..." if len(keys) > 8 else "")
+        result.warnings.append(
+            f"{len(keys)} backlog(s) appear in both '{first}' and '{second}'. The values "
+            f"from '{second}' were used: {shown}"
+        )
     for sheet_name in sorted(ambiguous):
         result.warnings.append(
             f"Ranking from '{sheet_name}' was skipped: its rows match more than one "

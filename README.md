@@ -108,7 +108,8 @@ Jira data through the `jira-rel-review` skill. Start with [Running it](#running-
 9. **Audit log** — who changed which field, from what to what, in which snapshot
 10. **Excel export** — the visible view, styled like the skill's workbooks
 11. **Spreadsheet analyzer** — upload a circulated Excel copy, diff it against the live
-    report or any role view, and save the parts you keep into the SE, TPM, or DEV view
+    report or any role view, save the parts you keep into the SE, TPM, or DEV view, and
+    get your own workbook back with the same outcome written into it
 12. **Spreadsheet updater** — upload an old exported report and get it back with the
     Jira columns brought forward, every edit and highlight left as it was
 
@@ -199,6 +200,8 @@ GET    /api/sync/status?kind=GL                Job state, elapsed, and duration 
 POST   /api/reports/:kind/:quarter/analyze              Upload an .xlsx, get a diff preview
                                                         (compare_with=LIVE|SE|TPM|DEV)
 POST   /api/reports/:kind/:quarter/analyze/apply        Save the accepted changes as a snapshot
+POST   /api/reports/:kind/:quarter/analyze/file-preview   What the upload itself would become
+POST   /api/reports/:kind/:quarter/analyze/file-download  The upload, with the outcome in it
 POST   /api/reports/:kind/:quarter/refresh-file         What a stale workbook would gain
 POST   /api/reports/:kind/:quarter/refresh-file/download  The same workbook, brought up to date
 
@@ -415,8 +418,17 @@ flowchart LR
    column filters with counts, and an **Already identical** tab listing the rows the file
    speaks about that the baseline already agrees with — so an empty diff is visibly a
    result rather than a failure.
-5. **Save.** The accepted lines are written as a new snapshot of the target view, authored
-   by whoever uploaded, labelled with the file name, with one audit row per applied cell.
+5. **Preview your own file.** **Preview updated spreadsheet** shows what the workbook you
+   uploaded would become, cell by cell and grouped by tab, without writing anything. Its
+   Rank, Developer, UAT ETA, PROD ETA and Comments are set to what the target view will
+   hold once the import lands — the changes you kept, plus anything that view already had
+   which your copy was missing; a change you dropped reverts to the view's value. Jira
+   columns and every other cell are left alone, and no rows are added or removed.
+6. **Apply and export.** One button does both halves: the accepted lines are written as a
+   new snapshot of the target view — authored by whoever uploaded, labelled with the file
+   name, one audit row per applied cell — and the same outcome is written into your
+   workbook, which downloads immediately. Your copy and the shared view cannot drift
+   apart, because both come from the same merged rows.
 
 The analyzer only ever imports the columns people type into. If the upload's Jira columns
 have gone stale as well, the summary says how many cells and links to the Updater below,

@@ -1,7 +1,12 @@
 import { useMemo, useRef, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
 
-import { analyzeSpreadsheet, applyAnalysis } from '../api'
+import {
+  analyzeSpreadsheet,
+  applyAnalysis,
+  downloadUpdatedFile,
+  previewUpdatedFile,
+} from '../api'
 import IdentityPrompt from '../components/IdentityPrompt'
 import { formatSyncTime } from '../ndp'
 import {
@@ -12,6 +17,7 @@ import {
   type CompareWith,
   type EditableField,
   type EditableRole,
+  type FileUpdatePlan,
   type SnapshotInfo,
   type UserInfo,
 } from '../types'
@@ -62,9 +68,12 @@ export default function AnalyzerPage() {
   const [sheet, setSheet] = useState(ALL_SHEETS)
   const [fields, setFields] = useState<Set<EditableField>>(new Set(FIELDS))
   const [filter, setFilter] = useState<Filter>('CHANGES')
-  const [busy, setBusy] = useState<'reading' | 'saving' | null>(null)
+  const [busy, setBusy] = useState<'reading' | 'previewing' | 'saving' | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [saved, setSaved] = useState<SnapshotInfo | null>(null)
+  const [downloaded, setDownloaded] = useState<string | null>(null)
+  // Set once the reviewer asks to see their own workbook with the changes in it.
+  const [filePlan, setFilePlan] = useState<FileUpdatePlan | null>(null)
 
   const run = async (
     target: File,
@@ -160,8 +169,42 @@ export default function AnalyzerPage() {
     [result, selected],
   )
 
+  const acceptedChanges = useMemo(
+    () =>
+      accepted.map(({ row, change }) => ({
+        sheet: row.sheet,
+        key: row.key,
+        field: change.field,
+        value: change.incoming,
+      })),
+    [accepted],
+  )
+
+  /** What the reviewer's own workbook would look like once this is settled. */
+  const preview = async () => {
+    if (!editor || !result || !file) return
+    setBusy('previewing')
+    setError(null)
+    try {
+      setFilePlan(
+        await previewUpdatedFile(
+          kind,
+          quarter,
+          file,
+          editor.email,
+          result.target_role,
+          acceptedChanges,
+        ),
+      )
+    } catch (e) {
+      setError((e as Error).message)
+    } finally {
+      setBusy(null)
+    }
+  }
+
   const save = async () => {
-    if (!editor || !result) return
+    if (!editor || !result || !file) return
     setBusy('saving')
     setError(null)
     try {
@@ -173,15 +216,22 @@ export default function AnalyzerPage() {
         // otherwise the backend starts from the target role's own latest save.
         based_on_id:
           result.compare_with === result.target_role ? (result.baseline?.id ?? null) : null,
-        changes: accepted.map(({ row, change }) => ({
-          sheet: row.sheet,
-          key: row.key,
-          field: change.field,
-          value: change.incoming,
-        })),
+        changes: acceptedChanges,
       })
+      // The same outcome goes into the reviewer's own file, so their copy and the
+      // view they just wrote cannot drift apart.
+      const written = await downloadUpdatedFile(
+        kind,
+        quarter,
+        file,
+        editor.email,
+        result.target_role,
+        acceptedChanges,
+      )
       setSaved(snapshot)
+      setDownloaded(written)
       setResult(null)
+      setFilePlan(null)
       setFile(null)
       setSelected(new Set())
     } catch (e) {
@@ -332,9 +382,75 @@ export default function AnalyzerPage() {
         {saved && (
           <div className="notice">
             Saved as a {saved.role} snapshot at {formatSyncTime(saved.created_at)} with{' '}
-            {saved.row_count} rows.{' '}
+            {saved.row_count} rows
+            {downloaded ? `, and downloaded ${downloaded}` : ''}.{' '}
             <Link to={`/reports/${kind}/${quarter}`}>Open the table</Link> and pick{' '}
             {saved.role} View to see it.
+          </div>
+        )}
+
+        {filePlan && result && (
+          <div className="card file-preview">
+            <div className="notes-head">
+              <span className="badge tag-status">Preview</span>
+              Your spreadsheet after these changes &mdash; {filePlan.changes.length} cell
+              {filePlan.changes.length === 1 ? '' : 's'} would be rewritten in{' '}
+              {filePlan.filename}
+              <button style={{ marginLeft: 'auto' }} onClick={() => setFilePlan(null)}>
+                Close
+              </button>
+            </div>
+            {filePlan.changes.length === 0 ? (
+              <div className="muted">
+                Nothing would change in the file itself: every value you kept is already
+                what your copy says.
+              </div>
+            ) : (
+              <>
+                <div className="muted">
+                  Only Rank, Developer, UAT ETA, PROD ETA and Comments are touched — Jira
+                  columns and every other cell are left alone. Your copy is set to what
+                  the {result.target_role} View will hold once this import lands: the
+                  changes you kept, plus anything that view already had which your copy
+                  was missing, and a change you dropped reverts to the view's value.
+                  Nothing is written until you press Apply.
+                </div>
+                <div className="sheet-groups">
+                  {groupBy(filePlan.changes, (c) => c.sheet).map(([tab, rows]) => (
+                    <div className="sheet-section" key={tab}>
+                      <div className="sheet-head">
+                        <span className="badge">{tab}</span>
+                        {rows.length} cell{rows.length === 1 ? '' : 's'}
+                      </div>
+                      <div className="table-wrap">
+                        <table className="grid">
+                          <thead>
+                            <tr>
+                              <th>Row</th>
+                              <th>Backlog</th>
+                              <th>Column</th>
+                              <th>Your file says</th>
+                              <th>Would become</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {rows.map((c) => (
+                              <tr key={`${c.row}:${c.field}`}>
+                                <td className="numeric">{c.row}</td>
+                                <td>{c.key}</td>
+                                <td>{c.label}</td>
+                                <td className="wide change-old">{c.in_file || '—'}</td>
+                                <td className="wide change-new">{c.current || '—'}</td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </>
+            )}
           </div>
         )}
 
@@ -487,14 +603,22 @@ export default function AnalyzerPage() {
                     Discard all shown
                   </button>
                   <button
-                    className="primary"
                     style={{ marginLeft: 'auto' }}
                     disabled={busy !== null || accepted.length === 0}
+                    onClick={preview}
+                    title="See what your own spreadsheet would look like with these changes in it"
+                  >
+                    {busy === 'previewing' ? 'Building...' : 'Preview updated spreadsheet'}
+                  </button>
+                  <button
+                    className="primary"
+                    disabled={busy !== null || accepted.length === 0}
                     onClick={save}
+                    title={`Save a ${result.target_role} snapshot and download your spreadsheet with the changes applied`}
                   >
                     {busy === 'saving'
-                      ? 'Saving...'
-                      : `Apply ${accepted.length} change${accepted.length === 1 ? '' : 's'} to ${result.target_role} View`}
+                      ? 'Applying...'
+                      : `Apply ${accepted.length} change${accepted.length === 1 ? '' : 's'} & export`}
                   </button>
                 </>
               )}

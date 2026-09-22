@@ -686,14 +686,17 @@ td.changed {
 .diff-stats {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 12px;
   flex-wrap: wrap;
 }
 
+/* The headline numbers carry the whole result, so they are read at a glance
+   rather than scanned out of body text. */
 .diff-stats .stat {
-  font-weight: 600;
-  padding: 2px 9px;
-  border-radius: 12px;
+  font-weight: 700;
+  font-size: 17px;
+  padding: 5px 14px;
+  border-radius: 14px;
   border: 1px solid transparent;
 }
 
@@ -724,6 +727,20 @@ td.changed {
 .diff-base {
   border-top: 1px solid var(--border);
   padding-top: 10px;
+  font-size: 14px;
+}
+
+.diff-base strong {
+  font-size: 15px;
+}
+
+.file-preview {
+  padding: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  border-color: #e0b94a;
+  background: #fffdf6;
 }
 
 .diff-list {
@@ -966,15 +983,40 @@ td.changed {
   background: #f7f8fa;
 }
 
+/* Which tab a block of changes belongs to is the first thing to land, so the
+   header reads as a section title rather than another table row. */
 .sheet-section > .sheet-head,
 .sheet-head.standalone {
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 8px 12px;
-  background: #eef1f6;
+  gap: 10px;
+  padding: 11px 14px;
+  background: #e7ebf3;
   border-bottom: 1px solid var(--border);
-  font-weight: 600;
+  font-weight: 700;
+  font-size: 16px;
+}
+
+.sheet-section > .sheet-head .badge,
+.sheet-head.standalone .badge {
+  font-size: 15px;
+  font-weight: 700;
+  padding: 3px 12px;
+  letter-spacing: 0.02em;
+}
+
+.sheet-section > .sheet-head .muted,
+.sheet-head.standalone .muted {
+  font-size: 13px;
+  font-weight: 400;
+}
+
+.notes-head {
+  font-size: 15px;
+}
+
+.notes-sheet {
+  font-size: 14px;
 }
 
 .sheet-section .table-wrap {

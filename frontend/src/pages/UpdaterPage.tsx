@@ -1,10 +1,188 @@
-import { useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useParams } from 'react-router-dom'
 
-import { downloadRefreshedFile, planFileRefresh } from '../api'
+import {
+  downloadRefreshedFile,
+  getSharePointFolder,
+  planFileRefresh,
+  scanSharePointFile,
+  updateSharePointFile,
+} from '../api'
 import IdentityPrompt from '../components/IdentityPrompt'
 import { formatSyncTime, ndpStatusClass } from '../ndp'
-import { JIRA_FIELD_LABELS, type FileUpdatePlan, type UserInfo } from '../types'
+import {
+  JIRA_FIELD_LABELS,
+  type FileProgress,
+  type FileUpdatePlan,
+  type SharePointFile,
+  type SharePointFolder,
+  type StatusCount,
+  type UserInfo,
+} from '../types'
+
+/** Where the file being refreshed lives: the team's SharePoint folder, or an upload. */
+type Source = 'sharepoint' | 'upload'
+
+// Older than this, the Jira data a comparison rests on is worth calling out.
+const STALE_SYNC_HOURS = 24
+
+function sizeText(bytes: number): string {
+  return bytes < 1024 * 1024 ? `${Math.round(bytes / 1024)} KB` : `${(bytes / 1048576).toFixed(1)} MB`
+}
+
+/** One side of the progress panel: each status, the file's count, and Jira's now. */
+function ProgressTable({ title, rows, unit }: { title: string; rows: StatusCount[]; unit: string }) {
+  if (rows.length === 0) return null
+  return (
+    <div className="progress-table">
+      <div className="progress-title">{title}</div>
+      <table className="grid">
+        <thead>
+          <tr>
+            <th>Status</th>
+            <th className="numeric">In the file</th>
+            <th className="numeric">In Jira now</th>
+            <th className="numeric">Change</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((r) => {
+            const delta = r.now - r.in_file
+            return (
+              <tr key={r.status}>
+                <td>
+                  <span className={`badge ${ndpStatusClass(r.status)}`}>{r.status}</span>
+                </td>
+                <td className="numeric">{r.in_file}</td>
+                <td className="numeric">
+                  <strong>{r.now}</strong>
+                </td>
+                <td className={`numeric delta ${delta > 0 ? 'up' : delta < 0 ? 'down' : ''}`}>
+                  {delta > 0 ? `+${delta}` : delta < 0 ? `${delta}` : '—'}
+                </td>
+              </tr>
+            )
+          })}
+        </tbody>
+      </table>
+      <div className="muted">Counted in {unit}.</div>
+    </div>
+  )
+}
+
+function syncAgeHours(iso: string | null): number {
+  return iso ? (Date.now() - new Date(iso).getTime()) / 3_600_000 : Infinity
+}
+
+function SharePointPanel({
+  folder,
+  kind,
+  quarter,
+  selected,
+  busy,
+  onScan,
+  onReload,
+}: {
+  folder: SharePointFolder | null
+  kind: string
+  quarter: string
+  selected: string | null
+  busy: boolean
+  onScan: (name: string) => void
+  onReload: () => void
+}) {
+  if (!folder) return <div className="muted">Looking for the {quarter} folder...</div>
+
+  if (!folder.found) {
+    return (
+      <div className="sp-setup">
+        <strong>The GLreport folder is not on this PC yet.</strong> One-time setup, about a
+        minute:
+        <ol>
+          <li>
+            Open the{' '}
+            <a href={folder.web_url} target="_blank" rel="noreferrer">
+              {quarter} folder in SharePoint
+            </a>{' '}
+            and go up to <strong>GL_BL</strong>.
+          </li>
+          <li>
+            Select <strong>GL_BL</strong> and choose <strong>Add shortcut to My files</strong>.
+            That covers every quarter, not just this one.
+          </li>
+          <li>
+            Wait until it appears in File Explorer, under{' '}
+            <code>OneDrive - TDSYNNEX\Shortcuts</code>,
+            then press <strong>Check again</strong>.
+          </li>
+        </ol>
+        <div className="muted">
+          Looked in: {folder.searched.join(', ') || 'nowhere configured'}. A different
+          location can be set with <code>SHAREPOINT_DIR</code> in <code>backend/.env</code>.
+        </div>
+        <button onClick={onReload}>Check again</button>
+      </div>
+    )
+  }
+
+  return (
+    <div className="sp-files">
+      <div className="sp-path">
+        <code>{folder.folder}</code>
+        <a href={folder.web_url} target="_blank" rel="noreferrer">
+          Open in SharePoint
+        </a>
+        <button onClick={onReload} disabled={busy}>
+          Refresh list
+        </button>
+      </div>
+      {folder.files.length === 0 ? (
+        <div className="muted">No workbooks in the {quarter} folder yet.</div>
+      ) : (
+        folder.files.map((f) => (
+          <button
+            key={f.name}
+            className={`sp-file ${f.name === selected ? 'selected' : ''} ${f.matches_report ? '' : 'other-report'}`}
+            onClick={() => onScan(f.name)}
+            disabled={busy}
+            title={
+              f.matches_report
+                ? 'Scan this file against the latest Jira data'
+                : `Named like a ${f.kind ?? 'different'} report; this page compares against ${kind}`
+            }
+          >
+            <span className="sp-name">{f.name}</span>
+            {f.kind && <span className="badge">{f.kind.replace('_', ' + ')}</span>}
+            {f.open_here && <span className="badge stale">open in Excel here</span>}
+            {f.cloud_only && <span className="badge">in the cloud, downloads on scan</span>}
+            <span className="muted">
+              saved {formatSyncTime(f.modified)} &middot; {sizeText(f.size)}
+            </span>
+            {f.name === selected && <span className="sp-scanned">scanned</span>}
+          </button>
+        ))
+      )}
+    </div>
+  )
+}
+
+function ProgressPanel({ progress }: { progress: FileProgress }) {
+  return (
+    <div className="card progress-panel">
+      <div className="notes-head">
+        Progress since this file was made
+        <span className="muted">
+          {progress.backlogs_in_file} backlogs in the file &rarr; {progress.backlogs_now} in
+          Jira now
+        </span>
+      </div>
+      <div className="progress-grid">
+        <ProgressTable title="Backlog status" rows={progress.backlogs} unit="backlog rows" />
+        <ProgressTable title="NDP status" rows={progress.ndps} unit="distinct NDPs" />
+      </div>
+    </div>
+  )
+}
 
 const FIELDS = Object.keys(JIRA_FIELD_LABELS)
 const ALL_SHEETS = 'ALL'
@@ -40,17 +218,28 @@ export default function UpdaterPage() {
   const [error, setError] = useState<string | null>(null)
   const [saved, setSaved] = useState<string | null>(null)
 
+  const [source, setSource] = useState<Source>('sharepoint')
+  const [folder, setFolder] = useState<SharePointFolder | null>(null)
+  // The SharePoint file the current plan was built from, token and all. The token
+  // is what makes the update refuse if someone saved the file after this scan.
+  const [scanned, setScanned] = useState<SharePointFile | null>(null)
+  // An update waiting on the identity prompt, run as soon as someone is identified.
+  const [pendingUpdate, setPendingUpdate] = useState(false)
+
+  const adopt = (result: FileUpdatePlan) => {
+    setPlan(result)
+    // Only offer the columns this file actually has something stale in; ticking a
+    // column with nothing behind it would just be noise.
+    setChosen(new Set(Object.keys(result.field_counts)))
+    setSheet(ALL_SHEETS)
+  }
+
   const run = async (target: File, user: UserInfo) => {
     setBusy('reading')
     setError(null)
     setSaved(null)
     try {
-      const result = await planFileRefresh(kind, quarter, target, user.email)
-      setPlan(result)
-      // Only offer the columns this file actually has something stale in; ticking a
-      // column with nothing behind it would just be noise.
-      setChosen(new Set(Object.keys(result.field_counts)))
-      setSheet(ALL_SHEETS)
+      adopt(await planFileRefresh(kind, quarter, target, user.email))
     } catch (e) {
       setPlan(null)
       setError((e as Error).message)
@@ -63,6 +252,98 @@ export default function UpdaterPage() {
     if (!next || !editor) return
     setFile(next)
     run(next, editor)
+  }
+
+  const scan = useCallback(
+    async (name: string, keepNote = false) => {
+      setBusy('reading')
+      setError(null)
+      if (!keepNote) setSaved(null)
+      try {
+        const result = await scanSharePointFile(kind, quarter, name)
+        setScanned(result.file)
+        adopt(result.plan)
+      } catch (e) {
+        setPlan(null)
+        setScanned(null)
+        setError((e as Error).message)
+      } finally {
+        setBusy(null)
+      }
+    },
+    [kind, quarter],
+  )
+
+  const loadFolder = useCallback(async () => {
+    try {
+      const listing = await getSharePointFolder(kind, quarter)
+      setFolder(listing)
+      return listing
+    } catch (e) {
+      setError((e as Error).message)
+      return null
+    }
+  }, [kind, quarter])
+
+  // Opening the page scans the newest workbook for this report straight away:
+  // "show me where things stand" should not need a click.
+  useEffect(() => {
+    if (source !== 'sharepoint') return
+    let cancelled = false
+    loadFolder().then((listing) => {
+      const newest = listing?.files.find((f) => f.matches_report)
+      if (!cancelled && newest) scan(newest.name)
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [source, loadFolder, scan])
+
+  const switchSource = (next: Source) => {
+    setSource(next)
+    setPlan(null)
+    setScanned(null)
+    setFile(null)
+    setSaved(null)
+    setError(null)
+  }
+
+  const updateOnSharePoint = async (user: UserInfo) => {
+    if (!scanned) return
+    setBusy('writing')
+    setError(null)
+    try {
+      const result = await updateSharePointFile(kind, quarter, {
+        name: scanned.name,
+        token: scanned.token,
+        author_email: user.email,
+        fields: [...chosen],
+        add_new: addNew,
+        flag_gone: flagGone,
+      })
+      setSaved(
+        `Updated ${result.file.name} on SharePoint: ${result.cells_updated} cells, ` +
+          `${result.rows_added} backlogs added, ${result.rows_flagged} flagged. OneDrive is ` +
+          `uploading it now. The previous version is in SharePoint's version history, ` +
+          `and a copy was kept at ${result.backup}.`,
+      )
+      await loadFolder()
+      // Scan again so the page shows the file as it now is: current, nothing to do.
+      await scan(result.file.name, true)
+    } catch (e) {
+      setError((e as Error).message)
+    } finally {
+      setBusy(null)
+    }
+  }
+
+  const requestUpdate = () => {
+    if (editor) {
+      updateOnSharePoint(editor)
+    } else {
+      setPendingUpdate(true)
+      setPromptOpen(true)
+    }
   }
 
   const toggleField = (name: string) =>
@@ -152,10 +433,38 @@ export default function UpdaterPage() {
             </div>
           </div>
 
-          <div className="step">
+          <div className="step step-wide">
             <span className="step-no">2</span>
             <div>
               <div className="step-title">The file you have been working in</div>
+              <div className="tabs view-tabs">
+                <button
+                  className={`tab ${source === 'sharepoint' ? 'active' : ''}`}
+                  onClick={() => switchSource('sharepoint')}
+                  disabled={busy !== null}
+                >
+                  SharePoint folder
+                </button>
+                <button
+                  className={`tab ${source === 'upload' ? 'active' : ''}`}
+                  onClick={() => switchSource('upload')}
+                  disabled={busy !== null}
+                >
+                  Upload a file
+                </button>
+              </div>
+
+              {source === 'sharepoint' ? (
+                <SharePointPanel
+                  folder={folder}
+                  kind={kind}
+                  quarter={quarter}
+                  selected={scanned?.name ?? null}
+                  busy={busy !== null}
+                  onScan={(name) => scan(name)}
+                  onReload={loadFolder}
+                />
+              ) : (
               <div
                 className={`dropzone ${over ? 'over' : ''} ${editor ? '' : 'locked'}`}
                 onClick={() => editor && picker.current?.click()}
@@ -182,6 +491,7 @@ export default function UpdaterPage() {
                   </>
                 )}
               </div>
+              )}
             </div>
             <input
               ref={picker}
@@ -198,19 +508,35 @@ export default function UpdaterPage() {
           <div className="step">
             <span className="step-no">3</span>
             <div>
-              <div className="step-title">What comes back</div>
+              <div className="step-title">
+                {source === 'sharepoint' ? 'What changes on SharePoint' : 'What comes back'}
+              </div>
               <div className="muted">
-                The same workbook, with the Jira columns brought forward. Rank, Developer,
-                UAT ETA, PROD ETA, Comments, and any highlighting you added are left
-                exactly as they are, and an <strong>update log</strong> sheet records
-                every cell that moved.
+                {source === 'sharepoint'
+                  ? 'The file is updated where it is, so every link to it keeps working. '
+                  : 'The same workbook, '}
+                with the Jira columns brought forward. Rank, Developer, UAT ETA, PROD ETA,
+                Comments, and any highlighting are left exactly as they are, and an{' '}
+                <strong>update log</strong> sheet records every cell that moved.
               </div>
             </div>
           </div>
         </div>
 
         {error && <div className="error">{error}</div>}
-        {saved && !error && <div className="notice">Downloaded {saved}</div>}
+        {saved && !error && (
+          <div className="notice">
+            {source === 'sharepoint' ? saved : `Downloaded ${saved}`}
+          </div>
+        )}
+        {plan && syncAgeHours(plan.last_jira_sync_at) > STALE_SYNC_HOURS && (
+          <div className="warning">
+            The Jira data this is compared with was last pulled{' '}
+            {formatSyncTime(plan.last_jira_sync_at)}, over a day ago. Press{' '}
+            <strong>Update from Jira</strong> on the table first, or the file will be brought
+            up to that older point rather than to today.
+          </div>
+        )}
 
         {plan && (
           <>
@@ -274,6 +600,8 @@ export default function UpdaterPage() {
               </div>
             </div>
 
+            {plan.progress && <ProgressPanel progress={plan.progress} />}
+
             <div className="table-status analyzer-actions">
               <select value={sheet} onChange={(e) => setSheet(e.target.value)}>
                 <option value={ALL_SHEETS}>All sheets</option>
@@ -314,14 +642,26 @@ export default function UpdaterPage() {
                 />
                 Flag {plan.gone_rows.length} dropped
               </label>
-              <button
-                className="primary"
-                style={{ marginLeft: 'auto' }}
-                disabled={busy !== null || nothingToDo}
-                onClick={download}
-              >
-                {busy === 'writing' ? 'Building...' : 'Download updated workbook'}
-              </button>
+              {source === 'sharepoint' ? (
+                <button
+                  className="primary"
+                  style={{ marginLeft: 'auto' }}
+                  disabled={busy !== null || nothingToDo || !scanned}
+                  onClick={requestUpdate}
+                  title="Write these changes into the file in SharePoint. Refused if anyone saved it after this scan."
+                >
+                  {busy === 'writing' ? 'Updating SharePoint...' : 'Update on SharePoint'}
+                </button>
+              ) : (
+                <button
+                  className="primary"
+                  style={{ marginLeft: 'auto' }}
+                  disabled={busy !== null || nothingToDo}
+                  onClick={download}
+                >
+                  {busy === 'writing' ? 'Building...' : 'Download updated workbook'}
+                </button>
+              )}
             </div>
 
             {(plan.new_rows.length > 0 || plan.gone_rows.length > 0) && (
@@ -462,11 +802,20 @@ export default function UpdaterPage() {
         <IdentityPrompt
           action="Update"
           confirmLabel="Continue"
-          onCancel={() => setPromptOpen(false)}
+          onCancel={() => {
+            setPromptOpen(false)
+            setPendingUpdate(false)
+          }}
           onIdentified={(user) => {
             setPromptOpen(false)
             setEditor(user)
-            if (file) run(file, user)
+            if (pendingUpdate) {
+              // They pressed Update on SharePoint before saying who they are.
+              setPendingUpdate(false)
+              updateOnSharePoint(user)
+            } else if (source === 'upload' && file) {
+              run(file, user)
+            }
           }}
         />
       )}

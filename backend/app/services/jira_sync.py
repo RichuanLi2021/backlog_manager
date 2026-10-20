@@ -5,8 +5,11 @@ before any Excel is written, so all region/exclusion/dedupe rules are inherited
 rather than reimplemented here.
 """
 import json
+import os
 import sys
+import urllib.parse
 import urllib.request
+from datetime import datetime
 from pathlib import Path
 
 from ..config import REPORT_SPECS, SKILL_DIR
@@ -136,3 +139,76 @@ def fetch_report(report_kind: str, quarter: str) -> list[dict]:
         quarter, domain_labels=REPORT_SPECS[report_kind]
     )
     return flatten(combo_data, report_kind, quarter)
+
+
+# Keys per changelog search. Keeps each JQL `key in (...)` well under URL limits.
+NDP_BATCH = 50
+
+
+def _jira_time(value: str) -> datetime:
+    """Jira's '2026-10-19T01:18:10.157-0700' as a local naive datetime, like the DB."""
+    for pattern in ("%Y-%m-%dT%H:%M:%S.%f%z", "%Y-%m-%dT%H:%M:%S%z"):
+        try:
+            return datetime.strptime(value, pattern).astimezone().replace(tzinfo=None)
+        except ValueError:
+            continue
+    raise ValueError(f"unrecognised Jira timestamp: {value!r}")
+
+
+def _entered_current_status(issue: dict) -> datetime:
+    """When this issue moved into the status it is in now.
+
+    The latest changelog entry that set the status to its current value. An issue
+    that has never been transitioned has been in its first status since creation.
+    """
+    fields = issue.get("fields") or {}
+    current = ((fields.get("status") or {}).get("name")) or ""
+    moves = [
+        _jira_time(history["created"])
+        for history in (issue.get("changelog") or {}).get("histories") or []
+        for item in history.get("items") or []
+        if item.get("field") == "status" and item.get("toString") == current
+    ]
+    return max(moves) if moves else _jira_time(fields["created"])
+
+
+def fetch_ndp_status_since(keys: list[str]) -> dict[str, tuple[str, datetime]]:
+    """Current status of each NDP and the moment it entered that status.
+
+    One JQL search per batch with the changelog expanded, so a report's worth of
+    NDPs costs a request or two rather than one each. Keys Jira does not return
+    (deleted, or not visible to this PAT) are simply absent from the result.
+    """
+    keys = sorted({k for k in keys if k and k.startswith("NDP-")})
+    if not keys:
+        return {}
+    skill = _load_skill()
+    skill.load_jira_env()
+    hierarchy = sys.modules["export_hierarchy"]
+    auth = skill.build_auth_header()
+    base = (os.getenv("JIRA_URL") or os.getenv("JIRA_SERVER_URL") or "").strip().rstrip("/")
+    if not auth or not base:
+        raise RuntimeError("No Jira credentials. Put JIRA_URL and JIRA_PAT in backend/.env.")
+
+    found: dict[str, tuple[str, datetime]] = {}
+    for start in range(0, len(keys), NDP_BATCH):
+        batch = keys[start : start + NDP_BATCH]
+        query = urllib.parse.urlencode(
+            {
+                "jql": f"key in ({','.join(batch)})",
+                "fields": "status,created",
+                "expand": "changelog",
+                "maxResults": len(batch),
+            }
+        )
+        for issue in hierarchy.api_get(base, auth, f"search?{query}").get("issues") or []:
+            changelog = issue.get("changelog") or {}
+            # A search can cap the changelog it inlines. The newest entries are the
+            # ones dropped, and those are exactly the ones needed, so fetch whole.
+            if changelog.get("total", 0) > len(changelog.get("histories") or []):
+                issue = hierarchy.api_get(
+                    base, auth, f"issue/{issue['key']}?fields=status,created&expand=changelog"
+                )
+            status = (((issue.get("fields") or {}).get("status") or {}).get("name")) or ""
+            found[issue["key"]] = (status, _entered_current_status(issue))
+    return found

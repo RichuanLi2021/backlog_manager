@@ -1187,3 +1187,252 @@ table.grid tr.skipped td.change-new {
   border-bottom: 1px solid var(--border);
   vertical-align: top;
 }
+
+/* ---- NDP time-in-status (Tree view) -------------------------------------------
+   Green within the warn threshold, amber up to the flag threshold, red beyond it.
+   The whole NDP row is tinted, not just the pill, so a flagged plan is visible
+   while scrolling a long tree. */
+:root {
+  --age-green: #1e7d4f;
+  --age-green-bg: #e9f6ee;
+  --age-yellow: #8a5a00;
+  --age-yellow-bg: #fff4d6;
+  --age-red: #b42318;
+  --age-red-bg: #fdecea;
+}
+
+.age-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 9px;
+  border-radius: 12px;
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+  border: 1px solid transparent;
+}
+
+.age-pill.green {
+  color: var(--age-green);
+  background: var(--age-green-bg);
+  border-color: #b7dfc8;
+}
+
+.age-pill.yellow {
+  color: var(--age-yellow);
+  background: var(--age-yellow-bg);
+  border-color: #f0d48a;
+}
+
+.age-pill.red {
+  color: #fff;
+  background: var(--age-red);
+  border-color: var(--age-red);
+}
+
+.age-pill.waiting {
+  color: var(--muted);
+  background: #f2f4f7;
+  border-color: var(--border);
+  font-weight: 500;
+}
+
+.age-pill.stale-status {
+  color: var(--age-yellow);
+  background: #fff;
+  border: 1px dashed #e0b94a;
+  font-weight: 500;
+}
+
+.tree-row.ndp-row.age-green {
+  background: var(--age-green-bg);
+}
+
+.tree-row.ndp-row.age-yellow {
+  background: var(--age-yellow-bg);
+}
+
+.tree-row.ndp-row.age-red {
+  background: var(--age-red-bg);
+  box-shadow: inset 4px 0 0 var(--age-red);
+}
+
+.tree-row.ndp-row.age-red .key {
+  color: var(--age-red);
+  font-weight: 700;
+}
+
+.age-summary {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 10px 12px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+
+.age-summary-title {
+  font-weight: 700;
+  margin-right: 4px;
+}
+
+.age-filter {
+  border-radius: 14px;
+  padding: 4px 12px;
+  font-size: 13px;
+}
+
+.age-filter strong {
+  font-size: 15px;
+  margin-right: 2px;
+}
+
+.age-filter.green {
+  color: var(--age-green);
+  background: var(--age-green-bg);
+  border-color: #b7dfc8;
+}
+
+.age-filter.yellow {
+  color: var(--age-yellow);
+  background: var(--age-yellow-bg);
+  border-color: #f0d48a;
+}
+
+.age-filter.red {
+  color: var(--age-red);
+  background: var(--age-red-bg);
+  border-color: #f1b5ae;
+}
+
+.age-filter.active {
+  box-shadow: 0 0 0 2px currentColor inset;
+}
+
+.age-filter:disabled {
+  opacity: 0.45;
+}
+
+/* ---- SharePoint source (Updater page) ---------------------------------------- */
+.step.step-wide {
+  grid-column: span 2;
+}
+
+.sp-setup {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  align-items: flex-start;
+  padding: 10px 12px;
+  background: #fffdf6;
+  border: 1px solid #f0dca8;
+  border-radius: var(--radius);
+}
+
+.sp-setup ol {
+  margin: 2px 0;
+  padding-left: 20px;
+}
+
+.sp-setup li {
+  padding: 2px 0;
+}
+
+.sp-files {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  width: 100%;
+}
+
+.sp-path {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-bottom: 4px;
+}
+
+.sp-path code {
+  font-size: 12px;
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+
+.sp-file {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  text-align: left;
+  width: 100%;
+  padding: 7px 10px;
+}
+
+.sp-file.selected {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.sp-file.other-report {
+  opacity: 0.6;
+}
+
+.sp-name {
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.sp-scanned {
+  margin-left: auto;
+  color: var(--accent);
+  font-weight: 600;
+  font-size: 12px;
+}
+
+/* ---- Progress: file against Jira now ----------------------------------------- */
+.progress-panel {
+  padding: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.progress-panel .notes-head .muted {
+  font-weight: 400;
+  font-size: 13px;
+  margin-left: 8px;
+}
+
+.progress-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+  gap: 16px;
+}
+
+.progress-title {
+  font-weight: 700;
+  margin-bottom: 6px;
+}
+
+.progress-table table.grid {
+  width: 100%;
+}
+
+td.numeric,
+th.numeric {
+  text-align: right;
+}
+
+td.delta.up {
+  color: var(--age-green);
+  font-weight: 700;
+}
+
+td.delta.down {
+  color: var(--age-red);
+  font-weight: 700;
+}

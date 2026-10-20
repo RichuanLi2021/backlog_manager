@@ -126,6 +126,48 @@ def test_plan_reports_the_week_of_movement():
           f"{len(plan.gone_rows)} gone, {plan.unchanged_cells} already current")
 
 
+def test_progress_counts_file_against_now():
+    """The file has three backlogs in 20-; a week on, Jira has them spread out."""
+    # One NDP has one status in a real sync, so every row under NDP-7539 agrees here.
+    current = [
+        row.model_copy(update={"ndp_status": "QC Approved"}) for row in current_backlog()
+    ]
+    plan = plan_update(week_old_export(), "GL_2026Q3.xlsx", current, "GL", "2026Q3", None)
+    got = {c.status: (c.in_file, c.now) for c in plan.progress.backlogs}
+    want = {
+        "10-Placeholder": (0, 1),           # CISGL-2556, raised since
+        "20-RequirementCompleted": (3, 0),  # all three, back then
+        "50-BacklogAccepted": (0, 1),       # CISGL-2466 moved on
+        "60-AccurateEstDone": (0, 1),       # CISGL-2451 moved on
+    }
+    check(got == want, f"backlog progress wrong: {got}")
+    check([c.status for c in plan.progress.backlogs] == sorted(want),
+          "statuses should run in workflow order, 10- before 20- before 50-")
+    check(plan.progress.backlogs_in_file == 3 and plan.progress.backlogs_now == 3,
+          f"totals wrong: {plan.progress.backlogs_in_file} / {plan.progress.backlogs_now}")
+    ndps = {c.status: (c.in_file, c.now) for c in plan.progress.ndps}
+    check(ndps == {"Open": (1, 0), "QC Approved": (0, 1)},
+          f"NDP progress should count NDP-7539 once, Open then QC Approved now: {ndps}")
+    print(f"progress: 20- 3 then 0; 10-/50-/60- one each now; NDP-7539 Open -> QC Approved")
+
+
+def test_a_repeated_priority_tab_is_not_counted_twice():
+    """Working files repeat NA_GL as a reordered priority-list tab: same backlogs."""
+    wb = load_workbook(BytesIO(week_old_export()))
+    copy = wb.copy_worksheet(wb["NA_GL"])
+    copy.title = "Q4_NA_GL_Priority_List"
+    buffer = BytesIO()
+    wb.save(buffer)
+    current = [r.model_copy(update={"ndp_status": "QC Approved"}) for r in current_backlog()]
+    plan = plan_update(buffer.getvalue(), "GL.xlsx", current, "GL", "2026Q3", None)
+    check([s.resolved_to for s in plan.sheets] == ["NA_GL", "NA_GL"],
+          f"the priority tab should resolve to NA_GL: {plan.sheets}")
+    check(plan.progress.backlogs_in_file == 3,
+          f"3 backlogs, not {plan.progress.backlogs_in_file}: the copy tab was double-counted")
+    check(plan.progress.backlogs_now == 3, f"now double-counted: {plan.progress.backlogs_now}")
+    print("repeated priority tab: 3 backlogs counted once, not six")
+
+
 def test_refresh_keeps_every_edit_and_the_highlight():
     updated, plan = build_updated_workbook(
         week_old_export(), "GL_2026Q3.xlsx", current_backlog(), "GL", "2026Q3", None
@@ -214,6 +256,8 @@ def test_a_file_for_the_wrong_report_says_so():
 def main():
     for test in (
         test_plan_reports_the_week_of_movement,
+        test_progress_counts_file_against_now,
+        test_a_repeated_priority_tab_is_not_counted_twice,
         test_refresh_keeps_every_edit_and_the_highlight,
         test_only_chosen_columns_are_touched,
         test_a_file_for_the_wrong_report_says_so,

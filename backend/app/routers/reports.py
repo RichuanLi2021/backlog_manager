@@ -5,11 +5,20 @@ from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, R
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from ..config import DEFAULT_QUARTER, REPORT_SPECS
+from ..config import (
+    DEFAULT_QUARTER,
+    NDP_AGE_FLAG_DAYS,
+    NDP_AGE_WARN_DAYS,
+    NDP_DONE_STATUSES,
+    NDP_UNSUBMITTED_STATUSES,
+    REPORT_SPECS,
+)
 from ..db import SessionLocal, get_db
-from ..models import BacklogSnapshot, Report, ReportSnapshot, SyncJob
+from ..models import BacklogSnapshot, NdpState, Report, ReportSnapshot, SyncJob
 from ..schemas import (
     BacklogRow,
+    NdpAgeRefresh,
+    NdpAgeRules,
     ReportDetail,
     QuarterCreate,
     ReportInfo,
@@ -19,7 +28,7 @@ from ..schemas import (
     TreeRelease,
     TreeSheet,
 )
-from ..services import excel_export, jira_sync, merge
+from ..services import excel_export, jira_sync, merge, ndp_age
 from .snapshots import latest_snapshot, newest_snapshot, snapshot_values, to_info
 
 router = APIRouter(prefix="/api", tags=["reports"])
@@ -334,6 +343,11 @@ def get_tree(
         else (latest_snapshot(db, kind, quarter, role.upper()) if role else None)
     )
     rows = _rows(db, kind, quarter, include_archived=False, snapshot=snapshot)
+    states = {
+        s.ndp: s
+        for s in db.scalars(select(NdpState).where(NdpState.ndp.in_({r.ndp for r in rows})))
+    }
+    now = datetime.now()
 
     out: list[TreeSheet] = []
     for sheet in sorted({r.sheet for r in rows}, key=sheet_sort_key):
@@ -344,11 +358,21 @@ def get_tree(
             ndps: list[TreeNdp] = []
             for ndp in sorted({r.ndp for r in rel_rows}):
                 ndp_rows = [r for r in rel_rows if r.ndp == ndp]
+                age = ndp_age.age_of(ndp_rows[0].ndp_status, states.get(ndp), now)
                 ndps.append(
                     TreeNdp(
                         ndp=ndp,
                         status=ndp_rows[0].ndp_status,
                         deploy_date=ndp_rows[0].ndp_deploy_date,
+                        age_level=age.level,
+                        age_days=age.days,
+                        status_since=age.since,
+                        age_source=age.source,
+                        live_status=(
+                            states[ndp].status
+                            if ndp in states and states[ndp].status != ndp_rows[0].ndp_status
+                            else ""
+                        ),
                         backlogs=[
                             TreeBacklog(
                                 id=r.id,
@@ -376,17 +400,25 @@ def _run_sync(job_id: int, kinds: list[str], quarter: str):
     try:
         job = db.get(SyncJob, job_id)
         done = []
+        ndp_statuses: dict[str, str] = {}
         for kind in kinds:
             job.message = f"Fetching {kind} from Jira..."
             db.commit()
             rows = jira_sync.fetch_report(kind, quarter)
             stats = merge.apply_snapshot(db, kind, quarter, rows)
+            ndp_statuses.update({r["ndp"]: r["ndp_status"] for r in rows})
             note = (
                 f" - incomplete Jira response, {stats['missing']} rows kept"
                 if stats["suspect"]
                 else f" ({stats['archived']} archived)"
             )
             done.append(f"{kind}: {stats['total']} rows{note}")
+        # Ages are a nice-to-have on top of the sync, never a reason to fail it.
+        job.message = "Checking how long each NDP has been in its status..."
+        db.commit()
+        aged = ndp_age.refresh(db, ndp_statuses)
+        if aged["error"]:
+            done.append(f"NDP ages approximate ({aged['error']})")
         job.state = "done"
         job.message = "; ".join(done)
         job.finished_at = datetime.now()
@@ -442,3 +474,45 @@ def sync_status(
         stmt = stmt.where(SyncJob.report_kind.in_([kind.upper(), "ALL"]))
     job = db.scalar(stmt.limit(1))
     return job_status(db, job) if job else None
+
+
+@router.post("/reports/{kind}/{quarter}/ndp-ages", response_model=NdpAgeRefresh)
+def refresh_ndp_ages(kind: str, quarter: str, db: Session = Depends(get_db)):
+    """Re-read NDP status dates from Jira without a full report sync.
+
+    One changelog search for this report's NDPs, a second or two, against the ~2
+    minutes of Update from Jira. Statuses come from the last sync; only the dates
+    are refreshed, so run Update from Jira first if statuses themselves look stale.
+    """
+    if kind not in REPORT_SPECS:
+        raise HTTPException(status_code=404, detail=f"unknown report kind: {kind}")
+    statuses = {
+        ndp: status
+        for ndp, status in db.execute(
+            select(BacklogSnapshot.ndp, BacklogSnapshot.ndp_status)
+            .where(
+                BacklogSnapshot.report_kind == kind,
+                BacklogSnapshot.quarter == quarter,
+                BacklogSnapshot.archived.is_(False),
+            )
+            .distinct()
+        )
+    }
+    result = ndp_age.refresh(db, statuses)
+    return NdpAgeRefresh(
+        ndps=result["jira"] + result["observed"],
+        from_jira=result["jira"],
+        observed=result["observed"],
+        error=result["error"],
+    )
+
+
+@router.get("/ndp-age-rules", response_model=NdpAgeRules)
+def ndp_age_rules():
+    """The thresholds behind the colours, so the legend can never disagree with them."""
+    return NdpAgeRules(
+        warn_days=NDP_AGE_WARN_DAYS,
+        flag_days=NDP_AGE_FLAG_DAYS,
+        done_statuses=sorted(NDP_DONE_STATUSES),
+        unsubmitted_statuses=sorted(NDP_UNSUBMITTED_STATUSES),
+    )

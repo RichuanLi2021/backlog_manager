@@ -5,6 +5,7 @@ snapshot as SE, re-runs a live Jira sync, and confirms the snapshot is unchanged
 and still separate from the live view.
 """
 import json
+import os
 import sys
 import urllib.error
 import urllib.request
@@ -15,7 +16,8 @@ from app.config import ADMIN_KEY  # noqa: E402
 from app.db import SessionLocal  # noqa: E402
 from app.services import jira_sync, merge  # noqa: E402
 
-API = "http://127.0.0.1:8000/api"
+# Set BACKLOG_API when the app is served somewhere other than the default port.
+API = os.getenv("BACKLOG_API", "http://127.0.0.1:8000").rstrip("/") + "/api"
 KIND, QUARTER, SHEET = "GL", "2026Q3", "NA_GL"
 
 USERS = [

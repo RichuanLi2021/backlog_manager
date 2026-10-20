@@ -110,8 +110,11 @@ Jira data through the `jira-rel-review` skill. Start with [Running it](#running-
 11. **Spreadsheet analyzer** — upload a circulated Excel copy, diff it against the live
     report or any role view, save the parts you keep into the SE, TPM, or DEV view, and
     get your own workbook back with the same outcome written into it
-12. **Spreadsheet updater** — upload an old exported report and get it back with the
-    Jira columns brought forward, every edit and highlight left as it was
+12. **Spreadsheet updater** — refresh the team's working file where it lives in the GLreport
+    SharePoint, or upload one, with the Jira columns brought forward and every edit and
+    highlight left as it was
+13. **NDP ageing** — the Tree view says how long each NDP has sat in its current status,
+    green within a week, amber up to two, red and flagged beyond that
 
 ### Refresh rules
 
@@ -180,6 +183,9 @@ AuditLog
 SyncJob
   quarter, report_kind, state (running | done | failed), message,
   started_at, finished_at
+
+NdpState                   -- when each NDP entered its current status
+  ndp (key), status, status_since, source (jira | observed), checked_at
 ```
 
 ---
@@ -204,6 +210,13 @@ POST   /api/reports/:kind/:quarter/analyze/file-preview   What the upload itself
 POST   /api/reports/:kind/:quarter/analyze/file-download  The upload, with the outcome in it
 POST   /api/reports/:kind/:quarter/refresh-file         What a stale workbook would gain
 POST   /api/reports/:kind/:quarter/refresh-file/download  The same workbook, brought up to date
+
+GET    /api/sharepoint/:kind/:quarter          The quarter's SharePoint folder and its workbooks
+POST   /api/sharepoint/:kind/:quarter/scan     One file: progress and every stale cell
+POST   /api/sharepoint/:kind/:quarter/update   Rewrite it in place (needs the scan's token)
+
+POST   /api/reports/:kind/:quarter/ndp-ages    Re-read NDP status dates from Jira (seconds)
+GET    /api/ndp-age-rules                      The thresholds behind the colours
 
 GET    /api/reports/:kind/:quarter/snapshots   Saves, optionally ?role=SE
 POST   /api/reports/:kind/:quarter/snapshots   Save the current table as the author's role
@@ -272,6 +285,8 @@ IT Leader Approved, IIC Approved, QC Approved, Verified, and whatever else Jira 
 so you can look at one status at a time or all of them together. Counts follow the region
 sheet you are on.
 - NDP status color-coded with the skill's palette (QC Approved red, IIC yellow, and so on)
+- Every NDP carries how long it has been in its status, and the row is tinted to match.
+  See [How long NDPs sit in a status](#how-long-ndps-sit-in-a-status)
 
 ---
 
@@ -294,6 +309,8 @@ backlog_manager/
         spreadsheet_layout.py    finds the header row, key column and fields in any copy
         spreadsheet_analyzer.py  file -> platform: diffs an upload against a view
         spreadsheet_updater.py   platform -> file: rewrites a stale file's Jira columns
+        sharepoint.py            the GLreport folder via OneDrive: list, read, guarded write
+        ndp_age.py               when each NDP entered its status, and its colour
     .env                   ADMIN_KEY, never committed
     verify_parity.py       counts vs Excel + internal invariants
     test_snapshots.py      groups, identity, and snapshots surviving a refresh
@@ -302,6 +319,10 @@ backlog_manager/
     test_updater.py        refresh keeps edits, ranks and highlighting, no server needed
     test_updater_api.py    export -> aged copy -> refreshed download
     test_quarters.py       opening, using and removing a quarter
+    test_ndp_age.py        ageing thresholds and changelog reading, no server needed
+    test_sharepoint.py     folder listing and the write guards, no server needed
+    test_sharepoint_api.py SharePoint scan / update and NDP ages end to end, own server
+    backups/sharepoint/    the original of every SharePoint file the platform rewrote
     db_info.py             where the database is and what is in it
     requirements.txt
   scripts/
@@ -498,6 +519,100 @@ Running the updater on a file it has already refreshed finds nothing left to do.
 And openpyxl rewrites the workbook, which preserves everything above but drops embedded
 charts and images — keep those in a separate file.
 
+## Keeping the SharePoint copy current
+
+The team works in a spreadsheet kept in the GLreport SharePoint, under
+`GL_BL/<quarter>/Updated`. Instead of downloading it, uploading it to the Updater and
+uploading the result back, the Updater page reads that folder directly and writes the
+refreshed file back where it was.
+
+**How it reaches SharePoint.** Through OneDrive sync, not the Graph API. Graph would need an
+Azure AD app registration and admin consent from IT; OneDrive sync needs neither, works
+under the tenant's existing security policies, and carries every write back to SharePoint
+with version history. The platform reads and writes local files only, all of it in
+`services/sharepoint.py`, so a Graph backend could replace that one module later.
+
+**One-time setup, per PC that runs the platform:**
+
+1. Open the folder in SharePoint and go up to **GL_BL**.
+2. Select **GL_BL** and choose **Add shortcut to My files**. Doing it on GL_BL rather than on
+   one quarter's folder covers every quarter, including ones opened later.
+3. Wait for it to appear in File Explorer. Current OneDrive puts it at
+   `OneDrive - TDSYNNEX\Shortcuts\GL report - GL_BL`; older builds at `OneDrive - TDSYNNEX\GL_BL`.
+   Either is found automatically.
+
+The platform finds it there on its own. If the library is synced somewhere else, set
+`SHAREPOINT_DIR` in `backend/.env` to the local folder that stands for GL_BL. Until the
+folder exists, the Updater shows these same steps and a **Check again** button.
+
+**Using it.** Open **Updater** on the report. The SharePoint folder is the default source:
+it lists the quarter's workbooks, newest first, and scans the newest one for this report
+straight away. A scan shows
+
+- **Progress since this file was made** — for each backlog status and each NDP status, how
+  many the file has against how many Jira has now, with the change. The counts reconcile:
+  what Jira has now is the file, less what Jira dropped, plus what was raised since.
+- every stale cell, sectioned by tab and tagged **Status Update** or **New**, exactly as for
+  an uploaded file.
+
+**Update on SharePoint** then writes those changes into the file in place, so every link to
+it in Teams or email keeps working. It asks who you are first, because it changes a file the
+whole team shares.
+
+| Guard | What it prevents |
+|-------|------------------|
+| The file must be unchanged since the scan | A colleague saving between your preview and your update. The update is refused and you scan again, so what lands is exactly what you approved |
+| The file must not be open in Excel on this PC | Your unsaved Excel session and the update overwriting each other |
+| The original is copied to `backend/backups/sharepoint/` first | Needing a browser to get the old version back. SharePoint's version history has it too |
+| New bytes are written beside the file and renamed over it | OneDrive ever uploading half a workbook |
+| File names are resolved inside the quarter's folder only | A crafted name reaching any other file |
+
+Someone editing the file in Excel for the web leaves no trace on this PC. If they save
+before the update, the first guard catches it; if they are mid-edit when it lands, Excel
+for the web tells them the file has changed.
+
+The comparison is against the platform's last Jira pull. If that is more than a day old the
+page says so: press **Update from Jira** on the table first, or the file is brought up to
+that older point rather than to today. Uploading still works for anything that does not
+live in this folder: the **Upload a file** tab is the old flow, unchanged.
+
+## How long NDPs sit in a status
+
+The Tree view puts a time on every NDP: how long it has been in the status it is in now.
+
+| Colour | Time in the current status | |
+|--------|----------------------------|-|
+| Green | within a week | on track |
+| Amber | over a week, up to two | at risk |
+| **Red** | over two weeks | **flagged**: the row is tinted red with a bar down its edge, and its release says how many it holds |
+
+A summary bar above the tree counts each colour for the tab you are on; click one to show
+only those NDPs.
+
+**Where the dates come from.** The NDP's own Jira changelog: the last time its status was
+set to what it is now. So an NDP stuck for three weeks shows three weeks the first time
+this runs, not zero; an NDP sent back and re-approved starts counting again from the
+re-approval; one never moved counts from its creation. All of a report's NDPs are read in
+one or two searches, a few seconds, both as part of **Update from Jira** and from the
+**Refresh NDP ages** button on the Tree page.
+
+**What is never flagged.**
+
+- *Finished*: Verified, Deployed, Closed, Done, Cancelled, Rejected. How long ago an NDP
+  finished is not a problem.
+- *Not yet submitted*: Open. An NDP normally waits in Open while its backlogs are built, so
+  its age is shown in grey but it never goes amber or red.
+
+**When a date is not used.** If Jira has moved an NDP on since the report was last synced,
+the report's status is out of date and so is any age measured against it. The NDP then
+shows *Jira now: Verified* (or wherever it went) instead of an age, and the page suggests
+**Update from Jira**. If Jira cannot be reached, ages fall back to the first sync that saw
+the status, shown with a **+** as "at least this long".
+
+The thresholds and both status lists live in `backend/app/config.py`; the day counts can
+also be set with `NDP_AGE_WARN_DAYS` and `NDP_AGE_FLAG_DAYS` in `backend/.env`. The legend
+reads them from the API, so it cannot disagree with the colours.
+
 ## Resolved questions
 
 | # | Question | Decision |
@@ -585,11 +700,18 @@ py test_analyzer_api.py       # export -> renamed copy -> preview -> partial app
 py test_updater.py            # refresh keeps edits, ranks and highlighting; needs no server
 py test_updater_api.py        # export -> aged copy -> refreshed download
 py test_quarters.py           # opening, using and removing a quarter
+py test_ndp_age.py            # ageing thresholds and changelog reading; needs no server
+py test_sharepoint.py         # folder listing and the write guards; needs no server
+py test_sharepoint_api.py     # SharePoint scan / update and NDP ages, end to end
 ```
 
-The `_api` scripts and `test_snapshots.py` call a running app on port 8000 and clean up
-after themselves. Set `BACKLOG_API=http://127.0.0.1:9000` to point them at a different
-port.
+`test_analyzer_api.py`, `test_updater_api.py`, `test_quarters.py` and `test_snapshots.py`
+call a running app on port 8000 and clean up after themselves. Set
+`BACKLOG_API=http://127.0.0.1:9000` to point them at a different port.
+
+`test_sharepoint_api.py` needs no running app: it starts its own on a free port, against a
+copy of the database and a temp folder standing in for SharePoint, so it never touches
+real data or the team's real files. It does read the NDP changelogs from Jira.
 
 `verify_parity.py` also asserts invariants the Excel files cannot: `NA_AR+GL` must equal
 `NA_AR` united with `NA_GL`, and each sheet must be identical across the reports
@@ -633,3 +755,5 @@ omit it, because a single short response would otherwise flag live backlogs as s
 - [x] Audit log captures all user edits with role and snapshot
 - [x] A circulated Excel copy can be uploaded, previewed against a view, and merged in part
 - [x] A stale exported report can be refreshed in place, keeping ranks, comments and highlighting
+- [x] The team's file in SharePoint is scanned against Jira and updated where it lives
+- [x] NDPs show how long they have been in their status, flagged after two weeks

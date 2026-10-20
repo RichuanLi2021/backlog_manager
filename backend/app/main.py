@@ -6,7 +6,7 @@ from fastapi.staticfiles import StaticFiles
 
 from .config import CORS_ORIGINS, DEFAULT_QUARTER, FRONTEND_DIST
 from .db import init_db
-from .routers import analyzer, audit, reports, snapshots, users
+from .routers import analyzer, audit, reports, sharepoint, snapshots, users
 
 
 @asynccontextmanager
@@ -30,6 +30,7 @@ app.include_router(snapshots.router)
 app.include_router(users.router)
 app.include_router(audit.router)
 app.include_router(analyzer.router)
+app.include_router(sharepoint.router)
 
 
 @app.get("/api/health")

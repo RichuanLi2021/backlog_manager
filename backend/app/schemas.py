@@ -211,6 +211,21 @@ class FileSheetPlan(BaseModel):
     columns: dict[str, str]
 
 
+class StatusCount(BaseModel):
+    status: str
+    in_file: int
+    now: int
+
+
+class FileProgress(BaseModel):
+    """Where a file says things stand, against where Jira says they stand now."""
+
+    backlogs: list[StatusCount]
+    ndps: list[StatusCount]
+    backlogs_in_file: int
+    backlogs_now: int
+
+
 class FileUpdatePlan(BaseModel):
     """What refreshing a circulated workbook from the platform would do to it."""
 
@@ -226,6 +241,55 @@ class FileUpdatePlan(BaseModel):
     gone_rows: list[FileGoneRow]
     unchanged_cells: int
     warnings: list[str]
+    # Status counts, file against Jira now. Only filled when Status is being compared.
+    progress: FileProgress | None = None
+
+
+class SharePointFile(BaseModel):
+    name: str
+    size: int
+    modified: datetime
+    token: str
+    kind: str | None = None
+    matches_report: bool = False
+    open_here: bool = False
+    cloud_only: bool = False
+
+
+class SharePointFolder(BaseModel):
+    quarter: str
+    found: bool
+    folder: str | None = None
+    searched: list[str]
+    web_url: str
+    files: list[SharePointFile]
+    last_jira_sync_at: datetime | None = None
+
+
+class SharePointScanRequest(BaseModel):
+    name: str
+
+
+class SharePointScan(BaseModel):
+    file: SharePointFile
+    plan: FileUpdatePlan
+
+
+class SharePointUpdateRequest(BaseModel):
+    name: str
+    token: str
+    author_email: str
+    fields: list[str] = []
+    add_new: bool = True
+    flag_gone: bool = True
+
+
+class SharePointUpdateResult(BaseModel):
+    file: SharePointFile
+    cells_updated: int
+    rows_added: int
+    rows_flagged: int
+    backup: str
 
 
 class ApplyChange(BaseModel):
@@ -259,6 +323,28 @@ class TreeNdp(BaseModel):
     status: str
     deploy_date: str
     backlogs: list[TreeBacklog]
+    # How long the NDP has been in `status`: see services/ndp_age.py for the levels.
+    age_level: str = "unknown"
+    age_days: float | None = None
+    status_since: datetime | None = None
+    age_source: str = ""
+    # Set when Jira has moved the NDP on since this report was last synced, so the
+    # tree can say "Jira now: Verified" instead of a bare unknown.
+    live_status: str = ""
+
+
+class NdpAgeRules(BaseModel):
+    warn_days: float
+    flag_days: float
+    done_statuses: list[str]
+    unsubmitted_statuses: list[str]
+
+
+class NdpAgeRefresh(BaseModel):
+    ndps: int
+    from_jira: int
+    observed: int
+    error: str | None = None
 
 
 class TreeRelease(BaseModel):

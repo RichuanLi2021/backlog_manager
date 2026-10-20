@@ -7,6 +7,11 @@ import type {
   CompareWith,
   EditableRole,
   FileUpdatePlan,
+  NdpAgeRefresh,
+  NdpAgeRules,
+  SharePointFolder,
+  SharePointScan,
+  SharePointUpdateResult,
   ReportDetail,
   ReportInfo,
   Role,
@@ -78,6 +83,12 @@ export const getTree = (
   view: ViewMode = 'LIVE',
   snapshotId: number | null = null,
 ) => request<TreeSheet[]>(`/reports/${kind}/${quarter}/tree${viewQuery(view, snapshotId)}`)
+
+export const getNdpAgeRules = () => request<NdpAgeRules>('/ndp-age-rules')
+
+/** Re-read NDP status dates from Jira: seconds, not the minutes of a full sync. */
+export const refreshNdpAges = (kind: string, quarter: string) =>
+  request<NdpAgeRefresh>(`/reports/${kind}/${quarter}/ndp-ages`, { method: 'POST' })
 
 export const refreshReport = (kind: string, quarter: string) =>
   request<SyncStatus>(`/reports/${kind}/${quarter}/refresh`, { method: 'POST' })
@@ -247,6 +258,32 @@ export const downloadUpdatedFile = (
     `/reports/${kind}/${quarter}/analyze/file-download`,
     writebackForm(file, authorEmail, targetRole, changes),
   )
+
+export const getSharePointFolder = (kind: string, quarter: string) =>
+  request<SharePointFolder>(`/sharepoint/${kind}/${quarter}`)
+
+export const scanSharePointFile = (kind: string, quarter: string, name: string) =>
+  request<SharePointScan>(`/sharepoint/${kind}/${quarter}/scan`, {
+    method: 'POST',
+    body: JSON.stringify({ name }),
+  })
+
+export const updateSharePointFile = (
+  kind: string,
+  quarter: string,
+  body: {
+    name: string
+    token: string
+    author_email: string
+    fields: string[]
+    add_new: boolean
+    flag_gone: boolean
+  },
+) =>
+  request<SharePointUpdateResult>(`/sharepoint/${kind}/${quarter}/update`, {
+    method: 'POST',
+    body: JSON.stringify(body),
+  })
 
 export const identifyUser = (identifier: string) =>
   request<UserInfo>('/users/identify', {

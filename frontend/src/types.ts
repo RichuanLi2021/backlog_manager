@@ -110,11 +110,33 @@ export interface TreeBacklog {
   spent_h: number
 }
 
+/** green / yellow / red while in the deploy pipeline; see services/ndp_age.py. */
+export type NdpAgeLevel = 'green' | 'yellow' | 'red' | 'waiting' | 'done' | 'unknown'
+
 export interface TreeNdp {
   ndp: string
   status: string
   deploy_date: string
   backlogs: TreeBacklog[]
+  age_level: NdpAgeLevel
+  age_days: number | null
+  status_since: string | null
+  age_source: string
+  live_status: string
+}
+
+export interface NdpAgeRules {
+  warn_days: number
+  flag_days: number
+  done_statuses: string[]
+  unsubmitted_statuses: string[]
+}
+
+export interface NdpAgeRefresh {
+  ndps: number
+  from_jira: number
+  observed: number
+  error: string | null
 }
 
 export interface TreeRelease {
@@ -290,4 +312,54 @@ export interface FileUpdatePlan {
   gone_rows: FileGoneRow[]
   unchanged_cells: number
   warnings: string[]
+  /** Status counts, file against Jira now; present when Status was compared. */
+  progress: FileProgress | null
+}
+
+export interface StatusCount {
+  status: string
+  in_file: number
+  now: number
+}
+
+export interface FileProgress {
+  backlogs: StatusCount[]
+  ndps: StatusCount[]
+  backlogs_in_file: number
+  backlogs_now: number
+}
+
+export interface SharePointFile {
+  name: string
+  size: number
+  modified: string
+  /** Changes whenever the file does; an update is refused if it no longer matches. */
+  token: string
+  kind: string | null
+  matches_report: boolean
+  open_here: boolean
+  cloud_only: boolean
+}
+
+export interface SharePointFolder {
+  quarter: string
+  found: boolean
+  folder: string | null
+  searched: string[]
+  web_url: string
+  files: SharePointFile[]
+  last_jira_sync_at: string | null
+}
+
+export interface SharePointScan {
+  file: SharePointFile
+  plan: FileUpdatePlan
+}
+
+export interface SharePointUpdateResult {
+  file: SharePointFile
+  cells_updated: number
+  rows_added: number
+  rows_flagged: number
+  backup: string
 }

@@ -6,3 +6,6 @@ backend/backlog.db
 frontend/node_modules/
 frontend/dist/
 .cursor/skills/jira-rel-review/Report/
+
+# Originals of SharePoint files rewritten by the platform
+backend/backups/

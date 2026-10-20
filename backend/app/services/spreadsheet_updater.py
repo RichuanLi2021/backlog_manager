@@ -13,6 +13,7 @@ currently say, one with `data_only=False` to write without flattening formulas.
 
 from __future__ import annotations
 
+from collections import Counter
 from copy import copy
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -27,8 +28,10 @@ from ..schemas import (
     FileFieldChange,
     FileGoneRow,
     FileNewRow,
+    FileProgress,
     FileSheetPlan,
     FileUpdatePlan,
+    StatusCount,
 )
 from .excel_export import NDP_FILLS
 from .spreadsheet_layout import (
@@ -257,6 +260,8 @@ def _plan_from(
     for change in plan.changes:
         plan.field_counts[change.field] = plan.field_counts.get(change.field, 0) + 1
     plan.changes.sort(key=lambda c: (c.sheet, c.row, c.field))
+    if "status" in fields:
+        plan.progress = progress(layout, current)
     return plan, targets
 
 
@@ -431,3 +436,65 @@ def _write_log(wb, plan: FileUpdatePlan, log: list[tuple], kind, quarter, last_s
         ws.append(list(entry))
     for column, width in zip("ABCDE", (16, 16, 20, 46, 46)):
         ws.column_dimensions[column].width = width
+
+
+def _status_key(status: str) -> tuple:
+    """Order statuses the way the workflow runs: '20-...' before '100-...'."""
+    head = status.split("-", 1)[0]
+    return (0, int(head), status) if head.isdigit() else (1, 0, status)
+
+
+def progress(layout, current: list[BacklogRow]) -> FileProgress:
+    """How many backlogs and NDPs sit in each status, in the file and in Jira now.
+
+    "Now" covers the same report sheets the file covers, including backlogs raised
+    since it was exported, so the two columns describe the same piece of work. A
+    backlog Jira has dropped still counts in the file and not now.
+
+    Counted once per report sheet: a working file often repeats a region sheet in a
+    reordered priority-list tab, and those are the same backlogs, not twice as many.
+    """
+    file_status: dict[tuple[str, str], str] = {}  # (report sheet, key) -> status
+    covered: set[str] = set()
+    file_ndps: dict[str, str] = {}
+    now_ndps: dict[str, str] = {}
+
+    for target in _targets(layout, current):
+        if target.sheet is None:
+            continue
+        sheet = target.layout
+        status_col = sheet.columns.get("status")
+        ndp_col = sheet.columns.get("ndp")
+        ndp_status_col = sheet.columns.get("ndp_status")
+        for key, row in sheet.keys:
+            if status_col:
+                file_status[(target.sheet, key)] = (
+                    text_of(sheet.value(row, status_col)) or "(blank)"
+                )
+            if ndp_col and ndp_status_col:
+                ndp = text_of(sheet.value(row, ndp_col))
+                if ndp.startswith("NDP-"):
+                    file_ndps[ndp] = text_of(sheet.value(row, ndp_status_col)) or "(blank)"
+        covered.add(target.sheet)
+
+    now_backlogs: Counter[str] = Counter()
+    for row in current:
+        if row.sheet not in covered or row.archived:
+            continue
+        now_backlogs[row.status or "(blank)"] += 1
+        if row.ndp.startswith("NDP-"):
+            now_ndps[row.ndp] = row.ndp_status or "(blank)"
+    file_backlogs = Counter(file_status.values())
+
+    def table(before: Counter, after: Counter) -> list[StatusCount]:
+        return [
+            StatusCount(status=s, in_file=before.get(s, 0), now=after.get(s, 0))
+            for s in sorted(set(before) | set(after), key=_status_key)
+        ]
+
+    return FileProgress(
+        backlogs=table(file_backlogs, now_backlogs),
+        ndps=table(Counter(file_ndps.values()), Counter(now_ndps.values())),
+        backlogs_in_file=sum(file_backlogs.values()),
+        backlogs_now=sum(now_backlogs.values()),
+    )

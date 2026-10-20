@@ -146,3 +146,21 @@ class SyncJob(Base):
     message: Mapped[str] = mapped_column(Text, default="")
     started_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
     finished_at: Mapped[datetime | None] = mapped_column(DateTime, default=None)
+
+
+class NdpState(Base):
+    """When each NDP entered its current status, so the Tree view can age it.
+
+    Keyed by the NDP alone: a deploy plan is one Jira issue however many reports
+    and quarters list it. `source` is "jira" when the date came from the issue's
+    changelog, or "observed" when Jira could not be asked and the date is only the
+    first sync that saw this status — a lower bound rather than the real answer.
+    """
+
+    __tablename__ = "ndp_states"
+
+    ndp: Mapped[str] = mapped_column(String(32), primary_key=True)
+    status: Mapped[str] = mapped_column(String(64), default="")
+    status_since: Mapped[datetime] = mapped_column(DateTime)
+    source: Mapped[str] = mapped_column(String(16), default="jira")
+    checked_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)

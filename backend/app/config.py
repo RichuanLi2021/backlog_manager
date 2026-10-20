@@ -45,3 +45,35 @@ CORS_ORIGINS = [
     "http://localhost:5173",
     "http://127.0.0.1:5173",
 ]
+
+# How long an NDP may sit in one status before the Tree view raises it. Measured
+# from the moment Jira's changelog says it entered that status.
+NDP_AGE_WARN_DAYS = float(os.getenv("NDP_AGE_WARN_DAYS", "7"))  # over this: yellow
+NDP_AGE_FLAG_DAYS = float(os.getenv("NDP_AGE_FLAG_DAYS", "14"))  # over this: red, flagged
+
+# Finished plans: how long ago they finished is not a problem, so they are never aged.
+NDP_DONE_STATUSES = {"Verified", "Deployed", "Closed", "Done", "Cancelled", "Rejected"}
+
+# Not yet submitted for deployment. Their age is shown but never flagged, since an
+# NDP normally waits in Open while its backlogs are still being built.
+NDP_UNSUBMITTED_STATUSES = {"Open"}
+
+# ---- SharePoint (GLreport site) ------------------------------------------------
+# The library is reached through OneDrive sync rather than the Graph API: no app
+# registration or tenant admin consent, and OneDrive carries every write back to
+# SharePoint with version history. SHAREPOINT_DIR is the local folder standing for
+# GL_BL; left empty, the usual sync locations are searched for it.
+SHAREPOINT_DIR = os.getenv("SHAREPOINT_DIR", "").strip()
+# Where a quarter's working files sit under that folder.
+SHAREPOINT_SUBDIR = os.getenv("SHAREPOINT_SUBDIR", "{quarter}/Updated").strip()
+# Shown in the UI so people can open the same folder in a browser.
+SHAREPOINT_WEB_URL = os.getenv(
+    "SHAREPOINT_WEB_URL",
+    "https://tdworldwide.sharepoint.com/sites/GLreport/Shared%20Documents/Forms/AllItems.aspx"
+    "?id=%2Fsites%2FGLreport%2FShared%20Documents%2FGL%5FBL%2F{quarter}%2FUpdated",
+).strip()
+# The original of every file the platform rewrites is kept here first. SharePoint
+# version history is the real safety net; this is the one that needs no browser.
+SHAREPOINT_BACKUP_DIR = Path(
+    os.getenv("SHAREPOINT_BACKUP_DIR", BACKEND_DIR / "backups" / "sharepoint")
+)

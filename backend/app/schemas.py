@@ -44,7 +44,9 @@ class BacklogRow(BaseModel):
     developer: str = ""
     uat_eta: str = ""
     prod_eta: str = ""
-    comments: str = ""
+    comments: str = ""  # the IT Comment
+    tpm_comment: str = ""
+    package: str = ""
 
 
 class SnapshotInfo(BaseModel):
@@ -74,7 +76,9 @@ class SnapshotRowInput(BaseModel):
     developer: str = ""
     uat_eta: str = ""
     prod_eta: str = ""
-    comments: str = ""
+    comments: str = ""  # the IT Comment
+    tpm_comment: str = ""
+    package: str = ""
 
 
 class SaveSnapshotRequest(BaseModel):
@@ -243,6 +247,8 @@ class FileUpdatePlan(BaseModel):
     warnings: list[str]
     # Status counts, file against Jira now. Only filled when Status is being compared.
     progress: FileProgress | None = None
+    # One line per tab the standard-layout pass rearranges, e.g. Comments -> IT Comment.
+    layout_changes: list[str] = []
 
 
 class SharePointFile(BaseModel):

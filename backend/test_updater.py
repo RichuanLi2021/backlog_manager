@@ -29,6 +29,12 @@ HEADERS = [
     "Est h", "Spent h", "UAT ETA", "PROD ETA", "Comments",
 ]
 COL = {name: i + 1 for i, name in enumerate(HEADERS)}
+
+
+def by_header(ws) -> dict:
+    """Columns of a written tab by title. The standard layout moves them, so the
+    input's positions say nothing about where a column ends up."""
+    return {c.value: c.column for c in ws[1] if c.value}
 HIGHLIGHT = PatternFill("solid", fgColor="FFFF00")
 
 
@@ -160,12 +166,15 @@ def test_a_repeated_priority_tab_is_not_counted_twice():
     wb.save(buffer)
     current = [r.model_copy(update={"ndp_status": "QC Approved"}) for r in current_backlog()]
     plan = plan_update(buffer.getvalue(), "GL.xlsx", current, "GL", "2026Q3", None)
-    check([s.resolved_to for s in plan.sheets] == ["NA_GL", "NA_GL"],
-          f"the priority tab should resolve to NA_GL: {plan.sheets}")
+    # Beside a priority-list tab, NA_GL is a frozen record: only the copy is worked on.
+    check([(s.name, s.resolved_to) for s in plan.sheets] == [("Q4_NA_GL_Priority_List", "NA_GL")],
+          f"only the priority tab should be active, read as NA_GL: {plan.sheets}")
+    check(any(i.startswith("NA_GL (kept as a record") for i in plan.sheets_ignored),
+          f"NA_GL should be reported as kept as a record: {plan.sheets_ignored}")
     check(plan.progress.backlogs_in_file == 3,
           f"3 backlogs, not {plan.progress.backlogs_in_file}: the copy tab was double-counted")
     check(plan.progress.backlogs_now == 3, f"now double-counted: {plan.progress.backlogs_now}")
-    print("repeated priority tab: 3 backlogs counted once, not six")
+    print("priority tab beside NA_GL: only the priority tab worked on, 3 backlogs counted")
 
 
 def test_refresh_keeps_every_edit_and_the_highlight():
@@ -174,6 +183,9 @@ def test_refresh_keeps_every_edit_and_the_highlight():
     )
     wb = load_workbook(BytesIO(updated))
     ws = wb["NA_GL"]
+    COL = by_header(ws)  # noqa: N806
+    check("IT Comment" in COL and "Comments" not in COL and "TPM Comment" in COL,
+          f"Comments should have become IT Comment beside a new TPM Comment: {list(COL)}")
     by_key = {ws.cell(row=r, column=COL["Backlog Key"]).value: r for r in range(2, ws.max_row + 1)}
 
     first = by_key["CISGL-2451"]
@@ -185,20 +197,20 @@ def test_refresh_keeps_every_edit_and_the_highlight():
 
     # Everything a person put in the file has to come back untouched.
     check(ws.cell(row=first, column=COL["Rank"]).value == 1, "rank was overwritten")
-    check(ws.cell(row=first, column=COL["Comments"]).value == "TPM: must ship first",
+    check(ws.cell(row=first, column=COL["IT Comment"]).value == "TPM: must ship first",
           "comment was overwritten")
     check(ws.cell(row=first, column=COL["Developer"]).value == "Ann Lee",
           "developer was overwritten")
     check(ws.cell(row=first, column=COL["UAT ETA"]).value == "2026-09-15",
           "UAT ETA was overwritten")
-    check(ws.cell(row=first, column=COL["Comments"]).fill.fgColor.rgb == "00FFFF00",
+    check(ws.cell(row=first, column=COL["IT Comment"]).fill.fgColor.rgb == "00FFFF00",
           "the highlight did not survive the round trip")
 
     gone = by_key["CISGL-9999"]
     marker = next(c.column for c in ws[1] if c.value == MARKER_HEADER)
     check("not in this report" in (ws.cell(row=gone, column=marker).value or ""),
           "dropped backlog was not flagged in the sheet")
-    check(ws.cell(row=gone, column=COL["Comments"]).value == "stakeholder asked for this",
+    check(ws.cell(row=gone, column=COL["IT Comment"]).value == "stakeholder asked for this",
           "a dropped row lost its comment")
 
     added = by_key.get("CISGL-2556")
@@ -208,7 +220,7 @@ def test_refresh_keeps_every_edit_and_the_highlight():
               "appended row has no summary")
         check(ws.cell(row=added, column=COL["Status"]).value == "10-Placeholder",
               "appended row has no status")
-        check(not ws.cell(row=added, column=COL["Comments"]).value,
+        check(not ws.cell(row=added, column=COL["IT Comment"]).value,
               "appended row invented a comment")
         check("new since" in (ws.cell(row=added, column=marker).value or ""),
               "appended row was not marked as new")
@@ -229,6 +241,7 @@ def test_only_chosen_columns_are_touched():
         fields=("status",), add_new=False, flag_gone=False,
     )
     ws = load_workbook(BytesIO(updated))["NA_GL"]
+    COL = by_header(ws)  # noqa: N806
     check(ws.cell(row=2, column=COL["Status"]).value == "60-AccurateEstDone",
           "chosen column was not refreshed")
     check(ws.cell(row=2, column=COL["NDP Status"]).value == "Open",

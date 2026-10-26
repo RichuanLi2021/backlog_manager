@@ -116,7 +116,11 @@ class SnapshotRow(Base):
     developer: Mapped[str] = mapped_column(Text, default="")
     uat_eta: Mapped[str] = mapped_column(Text, default="")
     prod_eta: Mapped[str] = mapped_column(Text, default="")
+    # Shown as "IT Comment". The column keeps its original name so every comment
+    # written before the IT / TPM split is, by definition, the IT one.
     comments: Mapped[str] = mapped_column(Text, default="")
+    tpm_comment: Mapped[str] = mapped_column(Text, default="")
+    package: Mapped[str] = mapped_column(String(64), default="")
 
 
 class AuditLog(Base):

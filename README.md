@@ -310,6 +310,7 @@ backlog_manager/
         spreadsheet_analyzer.py  file -> platform: diffs an upload against a view
         spreadsheet_updater.py   platform -> file: rewrites a stale file's Jira columns
         sharepoint.py            the GLreport folder via OneDrive: list, read, guarded write
+        sheet_standard.py        puts working tabs into the standard layout, losing nothing
         ndp_age.py               when each NDP entered its status, and its colour
     .env                   ADMIN_KEY, never committed
     verify_parity.py       counts vs Excel + internal invariants
@@ -322,6 +323,7 @@ backlog_manager/
     test_ndp_age.py        ageing thresholds and changelog reading, no server needed
     test_sharepoint.py     folder listing and the write guards, no server needed
     test_sharepoint_api.py SharePoint scan / update and NDP ages end to end, own server
+    test_sheet_standard.py the standard layout: nothing lost, frozen tabs untouched
     backups/sharepoint/    the original of every SharePoint file the platform rewrote
     db_info.py             where the database is and what is in it
     requirements.txt
@@ -519,6 +521,51 @@ Running the updater on a file it has already refreshed finds nothing left to do.
 And openpyxl rewrites the workbook, which preserves everything above but drops embedded
 charts and images — keep those in a separate file.
 
+## The standard spreadsheet layout
+
+Every working tab follows one layout: NA_GL's columns, with **UAT ETA** and **PROD ETA**
+right after NDP Status, **Package** after Assignee, and the old Comments split into
+**IT Comment** and **TPM Comment**.
+
+```
+Rank | Release | Release Title | NDP | NDP Status | UAT ETA | PROD ETA | NDP Deploy Date |
+Backlog Key | Summary | Issue Type | Status | Assignee | Package | Developer | Reporter |
+Priority | Biz Domain | Req Qtr | Labels | Backlog Source | Est h | Spent h |
+IT Comment | TPM Comment
+```
+
+It is defined once, as `COLUMNS` in `services/excel_export.py`, and everything follows it:
+the table on screen, every Excel export (GL, AR and AR + GL alike), and every tab the
+Updater writes.
+
+**Priority lists are the working tabs.** Exports name each tab as its region's priority
+list for the quarter, e.g. `Q4_NA_GL_Priority_List`, and those names are read back as their
+region sheet. Once a workbook has any `_Priority_List` tab, only those tabs are updated by
+the Updater or read by the Analyzer; plain `NA_GL` / `LAC_GL` tabs beside them are kept as a
+frozen record and never touched. A workbook with no priority-list tabs, such as an older
+upload, is worked on whole, as before.
+
+**Bringing an existing tab into line.** Before the Updater writes a working tab that is not
+yet in the standard layout, it rearranges it, and the preview lists what will change per tab
+before anything is written:
+
+- each recognised column moves to its standard place under its standard title, so a
+  legacy `Comments` column becomes `IT Comment` with all its text, and `package` becomes
+  `Package`;
+- a column the tab lacks is added empty, styled like the row's neighbouring cell so a
+  highlighted row stays highlighted all the way across;
+- an unrecognised column is kept, after the standard ones, never dropped;
+- `Update Status` stays last.
+
+Values, fills, fonts, number formats and widths move with their column. Run on the team's
+real 2026Q4 file, every one of its 5,690 filled cells came out under the same tab and column
+heading; a tab already in the layout is left byte-for-byte as it was.
+
+**In the platform**, the original Comments field is the IT Comment: everything written before
+the split shows there. TPM Comment and Package are new editable columns beside it, saved in
+snapshots, exported, and imported by the Analyzer (headers such as `IT Comment`, `TPM Comment`,
+`Comments`, `package` are all recognised).
+
 ## Keeping the SharePoint copy current
 
 The team works in a spreadsheet kept in the GLreport SharePoint, under
@@ -562,14 +609,19 @@ whole team shares.
 | Guard | What it prevents |
 |-------|------------------|
 | The file must be unchanged since the scan | A colleague saving between your preview and your update. The update is refused and you scan again, so what lands is exactly what you approved |
-| The file must not be open in Excel on this PC | Your unsaved Excel session and the update overwriting each other |
+| The file must not be open in Excel on this PC | Excel's AutoSave writing its open copy back over the update minutes later, so the changes silently vanish. Checked three ways: Excel's `~$` owner file, an Excel or Excel-for-the-web window titled with the workbook (a file opened from OneDrive leaves no `~$` file), and the file refusing an exclusive open. **Update on SharePoint** stays disabled while any of them is true |
 | The original is copied to `backend/backups/sharepoint/` first | Needing a browser to get the old version back. SharePoint's version history has it too |
 | New bytes are written beside the file and renamed over it | OneDrive ever uploading half a workbook |
 | File names are resolved inside the quarter's folder only | A crafted name reaching any other file |
 
-Someone editing the file in Excel for the web leaves no trace on this PC. If they save
-before the update, the first guard catches it; if they are mid-edit when it lands, Excel
-for the web tells them the file has changed.
+Someone with the file open on *another* PC leaves no trace on this one. If they save
+before the update, the first guard catches it. If their AutoSave lands after it, the page
+catches that instead: about a minute and a half after an update it scans the file again,
+and if the changes have been undone it says so in red and puts the file back on screen to
+update again once everyone has closed it.
+
+**Refresh** re-reads the folder *and* re-scans the file on screen, so after closing Excel or
+after someone else saves, one click shows the file as SharePoint has it now.
 
 The comparison is against the platform's last Jira pull. If that is more than a day old the
 page says so: press **Update from Jira** on the table first, or the file is brought up to
@@ -703,6 +755,7 @@ py test_quarters.py           # opening, using and removing a quarter
 py test_ndp_age.py            # ageing thresholds and changelog reading; needs no server
 py test_sharepoint.py         # folder listing and the write guards; needs no server
 py test_sharepoint_api.py     # SharePoint scan / update and NDP ages, end to end
+py test_sheet_standard.py     # standard layout: nothing lost, frozen tabs untouched
 ```
 
 `test_analyzer_api.py`, `test_updater_api.py`, `test_quarters.py` and `test_snapshots.py`

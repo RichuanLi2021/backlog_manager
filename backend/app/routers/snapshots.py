@@ -10,7 +10,8 @@ from ..schemas import SaveSnapshotRequest, SnapshotInfo
 router = APIRouter(prefix="/api", tags=["snapshots"])
 
 EDITABLE_ROLES = ("SE", "TPM", "DEV")
-USER_FIELDS = ("developer", "uat_eta", "prod_eta", "comments")
+# "comments" is the IT Comment; see models.SnapshotRow.
+USER_FIELDS = ("developer", "uat_eta", "prod_eta", "comments", "tpm_comment", "package")
 
 
 def row_count(db: Session, snapshot_id: int) -> int:
@@ -138,6 +139,8 @@ def save_snapshot(
                 uat_eta=row.uat_eta,
                 prod_eta=row.prod_eta,
                 comments=row.comments,
+                tpm_comment=row.tpm_comment,
+                package=row.package,
             )
         )
         kept += 1

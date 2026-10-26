@@ -26,6 +26,10 @@ type Source = 'sharepoint' | 'upload'
 // Older than this, the Jira data a comparison rests on is worth calling out.
 const STALE_SYNC_HOURS = 24
 
+// How long after an update to look again, long enough for an AutoSave elsewhere
+// to have come through OneDrive if it is going to.
+const VERIFY_AFTER_MS = 90_000
+
 function sizeText(bytes: number): string {
   return bytes < 1024 * 1024 ? `${Math.round(bytes / 1024)} KB` : `${(bytes / 1048576).toFixed(1)} MB`
 }
@@ -132,8 +136,12 @@ function SharePointPanel({
         <a href={folder.web_url} target="_blank" rel="noreferrer">
           Open in SharePoint
         </a>
-        <button onClick={onReload} disabled={busy}>
-          Refresh list
+        <button
+          onClick={onReload}
+          disabled={busy}
+          title="Re-read the folder and re-scan the file, as SharePoint has it now"
+        >
+          Refresh
         </button>
       </div>
       {folder.files.length === 0 ? (
@@ -308,6 +316,37 @@ export default function UpdaterPage() {
     setError(null)
   }
 
+  const [verifyAt, setVerifyAt] = useState<number | null>(null)
+  const [overwritten, setOverwritten] = useState<string | null>(null)
+
+  const verifyStuck = async (name: string) => {
+    setVerifyAt(null)
+    try {
+      const again = await scanSharePointFile(kind, quarter, name)
+      const back = again.plan.changes.length + again.plan.new_rows.length
+      if (back > 0) {
+        setOverwritten(
+          `${name} was saved over after the update: ${back} of the changes are gone again. ` +
+            'Someone still had it open in Excel (here or elsewhere) and AutoSave wrote their ' +
+            'copy back. Ask everyone to close it, then update again.',
+        )
+        setScanned(again.file)
+        adopt(again.plan)
+      }
+    } catch {
+      // A failed check proves nothing either way; the next scan will show the truth.
+    }
+  }
+
+  /** Re-read the folder and re-scan the file on screen, so both reflect SharePoint now. */
+  const refresh = async () => {
+    setOverwritten(null)
+    const listing = await loadFolder()
+    const keep = scanned && listing?.files.some((f) => f.name === scanned.name)
+    const target = keep ? scanned!.name : listing?.files.find((f) => f.matches_report)?.name
+    if (target) await scan(target)
+  }
+
   const updateOnSharePoint = async (user: UserInfo) => {
     if (!scanned) return
     setBusy('writing')
@@ -330,6 +369,10 @@ export default function UpdaterPage() {
       await loadFolder()
       // Scan again so the page shows the file as it now is: current, nothing to do.
       await scan(result.file.name, true)
+      // Someone with the file open in Excel elsewhere is invisible from this PC, and
+      // their AutoSave puts the old content back minutes later. Look again, and say so.
+      setVerifyAt(Date.now() + VERIFY_AFTER_MS)
+      window.setTimeout(() => verifyStuck(result.file.name), VERIFY_AFTER_MS)
     } catch (e) {
       setError((e as Error).message)
     } finally {
@@ -393,6 +436,7 @@ export default function UpdaterPage() {
   const nothingToDo =
     plan !== null &&
     visible.length === 0 &&
+    plan.layout_changes.length === 0 &&
     !(addNew && plan.new_rows.length) &&
     !(flagGone && plan.gone_rows.length)
 
@@ -462,7 +506,7 @@ export default function UpdaterPage() {
                   selected={scanned?.name ?? null}
                   busy={busy !== null}
                   onScan={(name) => scan(name)}
-                  onReload={loadFolder}
+                  onReload={refresh}
                 />
               ) : (
               <div
@@ -524,6 +568,19 @@ export default function UpdaterPage() {
         </div>
 
         {error && <div className="error">{error}</div>}
+        {overwritten && <div className="error">{overwritten}</div>}
+        {source === 'sharepoint' && scanned?.open_here && (
+          <div className="error">
+            {scanned.name} is open in Excel on this PC. Close it before updating: while it is
+            open, AutoSave writes its copy back over the update a few minutes later and the
+            changes disappear. Then press <strong>Refresh</strong>.
+          </div>
+        )}
+        {verifyAt && !overwritten && (
+          <div className="muted">
+            Checking again in a minute or so that nobody's Excel has saved over the update...
+          </div>
+        )}
         {saved && !error && (
           <div className="notice">
             {source === 'sharepoint' ? saved : `Downloaded ${saved}`}
@@ -600,6 +657,25 @@ export default function UpdaterPage() {
               </div>
             </div>
 
+            {plan.layout_changes.length > 0 && (
+              <div className="card notes-card layout-card">
+                <div className="notes-head">
+                  <span className="badge tag-status">Layout</span>
+                  These tabs will be put in the standard layout
+                </div>
+                <div className="muted">
+                  NA_GL&apos;s columns, Package after Assignee, and Comments split into IT
+                  Comment and TPM Comment. Every value, highlight and width moves with its
+                  column; nothing is dropped.
+                </div>
+                <ul>
+                  {plan.layout_changes.map((line) => (
+                    <li key={line}>{line}</li>
+                  ))}
+                </ul>
+              </div>
+            )}
+
             {plan.progress && <ProgressPanel progress={plan.progress} />}
 
             <div className="table-status analyzer-actions">
@@ -646,7 +722,7 @@ export default function UpdaterPage() {
                 <button
                   className="primary"
                   style={{ marginLeft: 'auto' }}
-                  disabled={busy !== null || nothingToDo || !scanned}
+                  disabled={busy !== null || nothingToDo || !scanned || scanned.open_here}
                   onClick={requestUpdate}
                   title="Write these changes into the file in SharePoint. Refused if anyone saved it after this scan."
                 >

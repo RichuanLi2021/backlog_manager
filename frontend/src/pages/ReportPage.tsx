@@ -186,6 +186,8 @@ export default function ReportPage() {
           uat_eta: r.uat_eta,
           prod_eta: r.prod_eta,
           comments: r.comments,
+          tpm_comment: r.tpm_comment,
+          package: r.package,
         })),
       })
       setEditor(null)

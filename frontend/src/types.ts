@@ -37,7 +37,10 @@ export interface BacklogRow {
   developer: string
   uat_eta: string
   prod_eta: string
+  /** The IT Comment. Named for the single comment column it was before the split. */
   comments: string
+  tpm_comment: string
+  package: string
 }
 
 export type Role = 'SE' | 'TPM' | 'DEV'
@@ -77,7 +80,10 @@ export interface SnapshotRowInput {
   developer: string
   uat_eta: string
   prod_eta: string
+  /** The IT Comment. Named for the single comment column it was before the split. */
   comments: string
+  tpm_comment: string
+  package: string
 }
 
 export interface ReportDetail {
@@ -164,14 +170,23 @@ export interface AuditEntry {
   changed_at: string
 }
 
-export type EditableField = 'rank' | 'developer' | 'uat_eta' | 'prod_eta' | 'comments'
+export type EditableField =
+  | 'rank'
+  | 'package'
+  | 'developer'
+  | 'uat_eta'
+  | 'prod_eta'
+  | 'comments'
+  | 'tpm_comment'
 
 export const FIELD_LABELS: Record<EditableField, string> = {
   rank: 'Rank',
+  package: 'Package',
   developer: 'Developer',
   uat_eta: 'UAT ETA',
   prod_eta: 'PROD ETA',
-  comments: 'Comments',
+  comments: 'IT Comment',
+  tpm_comment: 'TPM Comment',
 }
 
 export interface AnalyzedChange {
@@ -314,6 +329,8 @@ export interface FileUpdatePlan {
   warnings: string[]
   /** Status counts, file against Jira now; present when Status was compared. */
   progress: FileProgress | null
+  /** One line per tab the standard-layout pass rearranges. */
+  layout_changes: string[]
 }
 
 export interface StatusCount {

@@ -11,19 +11,24 @@ from openpyxl.utils import get_column_letter
 
 from ..schemas import BacklogRow
 
-# Column order matches the on-screen grid.
+# The team's standard layout: NA_GL's columns, with Package after Assignee and the
+# old Comments split into IT Comment and TPM Comment. Every exported tab and every
+# priority-list tab the Updater rewrites follows it, and the on-screen grid too.
 COLUMNS: list[tuple[str, str]] = [
     ("rank", "Rank"),
     ("release", "Release"),
     ("release_title", "Release Title"),
     ("ndp", "NDP"),
     ("ndp_status", "NDP Status"),
+    ("uat_eta", "UAT ETA"),
+    ("prod_eta", "PROD ETA"),
     ("ndp_deploy_date", "NDP Deploy Date"),
     ("key", "Backlog Key"),
     ("summary", "Summary"),
     ("issue_type", "Issue Type"),
     ("status", "Status"),
     ("assignee", "Assignee"),
+    ("package", "Package"),
     ("developer", "Developer"),
     ("reporter", "Reporter"),
     ("priority", "Priority"),
@@ -33,12 +38,11 @@ COLUMNS: list[tuple[str, str]] = [
     ("backlog_source", "Backlog Source"),
     ("est_h", "Est h"),
     ("spent_h", "Spent h"),
-    ("uat_eta", "UAT ETA"),
-    ("prod_eta", "PROD ETA"),
-    ("comments", "Comments"),
+    ("comments", "IT Comment"),
+    ("tpm_comment", "TPM Comment"),
 ]
 
-WIDE = {"release_title", "summary", "comments"}
+WIDE = {"release_title", "summary", "comments", "tpm_comment"}
 NUMERIC = {"rank", "est_h", "spent_h"}
 
 HDR_FILL = PatternFill("solid", fgColor="4472C4")
@@ -64,12 +68,19 @@ def _width(field: str) -> int:
 NDP_STATUS_COL = [field for field, _ in COLUMNS].index("ndp_status") + 1
 
 
-def build_workbook(rows: list[BacklogRow], about: list[tuple[str, str]]) -> bytes:
+def priority_tab(sheet: str, quarter: str) -> str:
+    """'NA_GL' in 2026Q4 -> 'Q4_NA_GL_Priority_List', the tab the team works in."""
+    return f"{quarter[-2:]}_{sheet}_Priority_List"[:31]
+
+
+def build_workbook(
+    rows: list[BacklogRow], about: list[tuple[str, str]], quarter: str = ""
+) -> bytes:
     wb = Workbook()
     wb.remove(wb.active)
 
     for sheet in dict.fromkeys(r.sheet for r in rows):
-        ws = wb.create_sheet(sheet[:31])
+        ws = wb.create_sheet(priority_tab(sheet, quarter) if quarter else sheet[:31])
         ws.append([header for _, header in COLUMNS])
         for cell in ws[1]:
             cell.fill = HDR_FILL

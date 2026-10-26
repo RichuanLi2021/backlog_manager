@@ -1436,3 +1436,13 @@ td.delta.down {
   color: var(--age-red);
   font-weight: 700;
 }
+
+.layout-card {
+  border-color: #e0b94a;
+  background: #fffdf6;
+}
+
+.layout-card ul {
+  margin: 4px 0 0;
+  padding-left: 18px;
+}

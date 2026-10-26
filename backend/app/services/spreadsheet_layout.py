@@ -18,7 +18,9 @@ from openpyxl import load_workbook
 from openpyxl.utils.exceptions import InvalidFileException
 
 # What the platform lets people edit, and therefore never overwrites from Jira.
-USER_FIELDS = ("rank", "developer", "uat_eta", "prod_eta", "comments")
+# "comments" is the IT Comment. A legacy "Comments" column lands there too, which
+# is where the team decided pre-split comments belong.
+USER_FIELDS = ("rank", "package", "developer", "uat_eta", "prod_eta", "comments", "tpm_comment")
 
 # What Jira owns. Refreshing a circulated file rewrites these and nothing else.
 JIRA_FIELDS = (
@@ -61,7 +63,12 @@ USER_ALIASES: dict[str, set[str]] = {
         "prodeta", "prod", "proddate", "production", "productioneta", "productiondate",
         "golive", "golivedate", "golivedt",
     },
-    "comments": {"comments", "comment", "remark", "remarks", "note", "notes", "feedback"},
+    "comments": {
+        "itcomment", "itcomments", "itnote", "itnotes",
+        "comments", "comment", "remark", "remarks", "note", "notes", "feedback",
+    },
+    "tpm_comment": {"tpmcomment", "tpmcomments", "tpmnote", "tpmnotes", "tpmremark", "tpmremarks"},
+    "package": {"package", "packages", "pkg", "module"},
 }
 
 JIRA_ALIASES: dict[str, set[str]] = {
@@ -289,12 +296,27 @@ def read_layouts(
     return layout
 
 
+def report_sheet_key(title: object) -> str:
+    """Fold a tab name to the region sheet it stands for.
+
+    'Q4_NA_GL_Priority_List' and 'NA_GL' both give 'nagl': the priority-list tab is
+    the team's working copy of that region sheet, under the quarter's prefix.
+    """
+    key = _norm(title)
+    key = re.sub(r"^q[1-4](?=na|lac)", "", key)
+    return re.sub(r"prioritylist$", "", key)
+
+
+def is_priority_tab(title: object) -> bool:
+    return _norm(title).endswith("prioritylist")
+
+
 def resolve_sheet(
     layout: SheetLayout, sheets: dict[str, str], by_key: dict[str, set[str]]
 ) -> str | None:
     """Which report sheet a worksheet stands for: its name if that is recognizable,
     otherwise whichever sheet holds the most of the keys it lists."""
-    named = sheets.get(_norm(layout.name))
+    named = sheets.get(report_sheet_key(layout.name))
     if named:
         return named
     scores: dict[str, int] = {}

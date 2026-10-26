@@ -101,9 +101,37 @@ def test_write_guards():
     print(f"writes: stale preview refused, open file refused, backup kept at {backup.name}")
 
 
+def test_open_in_excel_without_an_owner_file():
+    """Opened from OneDrive, Excel leaves no ~$ file; this is what undid real updates."""
+    path = sharepoint.locate(QUARTER, "GL_Summary_2026Q4.xlsx")
+    check(sharepoint.in_use(path, titles=["GL_Summary_2026Q4.xlsx - Excel"]) is not None,
+          "a desktop Excel window on the workbook was not noticed")
+    check(sharepoint.in_use(path, titles=["GL_Summary_2026Q4 - Excel"]) is not None,
+          "an Excel window without the extension shown was not noticed")
+    check(sharepoint.in_use(path, titles=["GL_Summary_2026Q4.xlsx - Excel Online - Edge"]) is not None,
+          "Excel for the web in a browser tab was not noticed")
+    check(sharepoint.in_use(path, titles=["GL_Summary_2026Q3.xlsx - Excel", "Inbox - Outlook"]) is None,
+          "another workbook's window was mistaken for this one")
+
+    if sys.platform == "win32":
+        import ctypes
+        k32 = ctypes.windll.kernel32
+        k32.CreateFileW.restype = ctypes.c_void_p
+        # Hold the file the way Excel does: no sharing at all.
+        handle = k32.CreateFileW(str(path), 0x80000000, 0, None, 3, 0x80, None)
+        try:
+            token = sharepoint.info(path).token
+            refused(lambda: sharepoint.replace(path, b"ours", token), 409, "locked by another")
+        finally:
+            k32.CloseHandle(ctypes.c_void_p(handle))
+        check(sharepoint.in_use(path, titles=[]) is None, "a released file still reads as locked")
+    print("open in Excel: window titles and exclusive locks both refuse the update")
+
+
 def main():
     setup()
-    for test in (test_finding_and_listing, test_names_cannot_leave_the_folder, test_write_guards):
+    for test in (test_finding_and_listing, test_names_cannot_leave_the_folder, test_write_guards,
+                 test_open_in_excel_without_an_owner_file):
         try:
             test()
         except Exception as exc:

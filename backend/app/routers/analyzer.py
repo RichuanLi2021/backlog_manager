@@ -44,7 +44,9 @@ FIELD_LABELS = {
     "developer": "Developer",
     "uat_eta": "UAT ETA",
     "prod_eta": "PROD ETA",
-    "comments": "Comments",
+    "comments": "IT Comment",
+    "tpm_comment": "TPM Comment",
+    "package": "Package",
 }
 
 
@@ -349,6 +351,8 @@ def apply_analysis(
                 uat_eta=row.uat_eta,
                 prod_eta=row.prod_eta,
                 comments=row.comments,
+                tpm_comment=row.tpm_comment,
+                package=row.package,
             )
         )
 

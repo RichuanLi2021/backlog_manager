@@ -41,10 +41,28 @@ def _add_missing_columns():
                 continue
             present = {c["name"] for c in inspector.get_columns(table.name)}
             for column in table.columns:
-                if column.name in present:
-                    continue
                 default = column.default.arg if column.default is not None else None
-                clause = f"ALTER TABLE {table.name} ADD COLUMN {column.name} {column.type}"
-                if isinstance(default, (int, float)):
-                    clause += f" DEFAULT {default}"
-                conn.execute(text(clause))
+                literal = _sql_literal(default)
+                if column.name not in present:
+                    clause = f"ALTER TABLE {table.name} ADD COLUMN {column.name} {column.type}"
+                    if literal is not None:
+                        clause += f" DEFAULT {literal}"
+                    conn.execute(text(clause))
+                # Rows that existed before a column was added hold NULL there, which the
+                # API cannot serialise as the str or int the model promises. Fill them.
+                if literal is not None:
+                    conn.execute(
+                        text(f"UPDATE {table.name} SET {column.name} = {literal} "
+                             f"WHERE {column.name} IS NULL")
+                    )
+
+
+def _sql_literal(value):
+    """A model default as SQL, or None when it is not a plain constant."""
+    if isinstance(value, bool):
+        return "1" if value else "0"
+    if isinstance(value, (int, float)):
+        return str(value)
+    if isinstance(value, str):
+        return "'" + value.replace("'", "''") + "'"
+    return None

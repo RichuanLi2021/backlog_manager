@@ -12,6 +12,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+from .sheet_standard import active_tabs, frozen_tabs
 from ..schemas import AnalyzedChange, AnalyzedRow, BacklogRow, IdenticalRow
 from .spreadsheet_layout import (
     USER_ALIASES,
@@ -21,6 +22,7 @@ from .spreadsheet_layout import (
     _norm,
     rank_of,
     read_layouts,
+    report_sheet_key,
     same_value,
     text_of,
 )
@@ -76,7 +78,12 @@ def parse_workbook(data: bytes, filename: str) -> ParsedWorkbook:
     layout = read_layouts(data, filename, USER_FIELDS, USER_ALIASES)
 
     parsed = ParsedWorkbook(sheets_ignored=layout.ignored, warnings=layout.warnings)
-    for sheet in layout.sheets:
+    # Plain region tabs beside priority-list tabs are a frozen record, not edits.
+    parsed.sheets_ignored += [
+        f"{name} (kept as a record: only the Priority_List tabs are read)"
+        for name in frozen_tabs(layout.sheets)
+    ]
+    for sheet in active_tabs(layout.sheets):
         editable = {f: c for f, c in sheet.columns.items() if f in USER_FIELDS}
         if not editable:
             parsed.sheets_ignored.append(
@@ -132,7 +139,7 @@ def compare(parsed: ParsedWorkbook, current: list[BacklogRow]) -> Comparison:
         result.matched_keys.add(parsed_row.key)
         result.matched_by_sheet.setdefault(parsed_row.source_sheet, set()).add(parsed_row.key)
 
-        named = sheets.get(_norm(parsed_row.source_sheet))
+        named = sheets.get(report_sheet_key(parsed_row.source_sheet))
         targets = [c for c in candidates if c.sheet == named] if named else []
         if not targets:
             targets = candidates

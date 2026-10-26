@@ -19,10 +19,13 @@ from openpyxl import Workbook, load_workbook
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from app.config import ADMIN_KEY  # noqa: E402
+from app.services.excel_export import priority_tab  # noqa: E402
 
 # Set BACKLOG_API when the app is served somewhere other than the default port.
 API = os.getenv("BACKLOG_API", "http://127.0.0.1:8000").rstrip("/") + "/api"
 KIND, QUARTER, SHEET = "GL", "2026Q3", "NA_GL"
+# Exports name each tab as the team's working copy, e.g. Q3_NA_GL_Priority_List.
+TAB = priority_tab(SHEET, QUARTER)
 REPORT_KINDS = ("GL", "AR", "AR_GL")
 USER = {"email": "analyzer.tester@tdsynnex.com", "name": "Analyzer Tester", "role": "TPM"}
 
@@ -124,7 +127,15 @@ def every_sheet_is_covered(failures):
             continue
 
         covered = {s["name"]: s for s in result["sheet_summary"]}
-        missing = [s for s in expected if s not in covered]
+        # Tabs are exported as each region's priority list; each must read as exactly
+        # its own region sheet, never a neighbour that shares its backlogs.
+        for sheet in expected:
+            tab = priority_tab(sheet, QUARTER)
+            got = covered.get(tab, {}).get("target_sheets")
+            if got != [sheet]:
+                failures.append(f"{kind}: tab {tab} should read as [{sheet}], got {got}")
+        reached = {t for s in covered.values() for t in s["target_sheets"]}
+        missing = [s for s in expected if s not in reached]
         if missing:
             failures.append(f"{kind}: these sheets were never read: {missing}")
         unmatched = [
@@ -145,12 +156,12 @@ def write_back_settles_the_file(failures, keys):
     up saying the same thing, so the discarded half matters as much as the kept half.
     """
     blob = call("GET", f"/reports/{KIND}/{QUARTER}/export?sheet={SHEET}", raw=True)
-    source = load_workbook(BytesIO(blob))[SHEET]
+    source = load_workbook(BytesIO(blob))[TAB]
     headers = [c.value for c in source[1]]
-    key_col, comment_col = headers.index("Backlog Key"), headers.index("Comments")
+    key_col, comment_col = headers.index("Backlog Key"), headers.index("IT Comment")
 
     wb = load_workbook(BytesIO(blob))
-    ws = wb[SHEET]
+    ws = wb[TAB]
     rows = {ws.cell(row=r, column=key_col + 1).value: r for r in range(2, ws.max_row + 1)}
     keep, drop = keys[0], keys[1]
     ws.cell(row=rows[keep], column=comment_col + 1).value = "keep this one"
@@ -195,7 +206,7 @@ def write_back_settles_the_file(failures, keys):
     if isinstance(written, dict):
         failures.append(f"file download failed: {written}")
         return
-    out = load_workbook(BytesIO(written))[SHEET]
+    out = load_workbook(BytesIO(written))[TAB]
     back = {out.cell(row=r, column=key_col + 1).value: r for r in range(2, out.max_row + 1)}
     check(failures,
           out.cell(row=back[keep], column=comment_col + 1).value == "keep this one",
@@ -223,7 +234,7 @@ def main():
     if isinstance(blob, dict):
         print(f"nothing to export ({blob}); run a sync first")
         return 1
-    source = load_workbook(BytesIO(blob))[SHEET]
+    source = load_workbook(BytesIO(blob))[TAB]
     headers = [c.value for c in source[1]]
     rows = [[c.value for c in r] for r in source.iter_rows(min_row=2)]
     if len(rows) < 6:

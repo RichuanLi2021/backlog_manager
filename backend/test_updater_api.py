@@ -19,10 +19,13 @@ from openpyxl.styles import PatternFill
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from app.config import ADMIN_KEY  # noqa: E402
+from app.services.excel_export import priority_tab  # noqa: E402
 
 # Set BACKLOG_API when the app is served somewhere other than the default port.
 API = os.getenv("BACKLOG_API", "http://127.0.0.1:8000").rstrip("/") + "/api"
 KIND, QUARTER, SHEET = "GL", "2026Q3", "NA_GL"
+# Exports name each tab as the team's working copy, e.g. Q3_NA_GL_Priority_List.
+TAB = priority_tab(SHEET, QUARTER)
 USER = {"email": "updater.tester@tdsynnex.com", "name": "Updater Tester", "role": "SE"}
 HIGHLIGHT = PatternFill("solid", fgColor="FFFF00")
 
@@ -95,7 +98,7 @@ def age_the_file(blob, live):
     re-sync could hand us a row that already reads the way we meant to age it.
     """
     wb = load_workbook(BytesIO(blob))
-    ws = wb[SHEET]
+    ws = wb[TAB]
     head = {c.value: c.column for c in ws[1]}
     keys = {ws.cell(row=r, column=head["Backlog Key"]).value: r for r in range(2, ws.max_row + 1)}
     picked = list(keys)[:4]
@@ -115,7 +118,7 @@ def age_the_file(blob, live):
     aged[picked[2]] = ("Est h", "est_h")
 
     # Edits and a highlight the stakeholders added on top of the export.
-    ws.cell(row=keys[picked[0]], column=head["Comments"]).value = "TPM: must ship first"
+    ws.cell(row=keys[picked[0]], column=head["IT Comment"]).value = "TPM: must ship first"
     ws.cell(row=keys[picked[0]], column=head["Developer"]).value = "Ann Lee"
     ws.cell(row=keys[picked[0]], column=head["Rank"]).value = 1
     for column in range(1, ws.max_column + 1):
@@ -174,7 +177,7 @@ def main():
         return 1
     print(f"downloaded {len(updated)} bytes")
 
-    ws = load_workbook(BytesIO(updated))[SHEET]
+    ws = load_workbook(BytesIO(updated))[TAB]
     head = {c.value: c.column for c in ws[1]}
     rows = {ws.cell(row=r, column=head["Backlog Key"]).value: r for r in range(2, ws.max_row + 1)}
 
@@ -189,12 +192,12 @@ def main():
         want = live[key][name]
         check(alike(got, want), f"{key} {label} is {got!r}, Jira says {want!r}")
 
-    check(ws.cell(row=rows[edited], column=head["Comments"]).value == "TPM: must ship first",
+    check(ws.cell(row=rows[edited], column=head["IT Comment"]).value == "TPM: must ship first",
           "the comment was overwritten")
     check(ws.cell(row=rows[edited], column=head["Developer"]).value == "Ann Lee",
           "the developer was overwritten")
     check(ws.cell(row=rows[edited], column=head["Rank"]).value == 1, "the rank was overwritten")
-    check(ws.cell(row=rows[edited], column=head["Comments"]).fill.fgColor.rgb == "00FFFF00",
+    check(ws.cell(row=rows[edited], column=head["IT Comment"]).fill.fgColor.rgb == "00FFFF00",
           "the highlight did not survive")
     print(f"{edited}: Jira columns current, comment / developer / rank / highlight intact")
 
@@ -209,7 +212,7 @@ def main():
               live[deleted]["summary"], "the appended row has the wrong summary")
 
     log = load_workbook(BytesIO(updated))["update log"]
-    entries = [r for r in log.iter_rows(values_only=True) if r[0] == SHEET]
+    entries = [r for r in log.iter_rows(values_only=True) if r[0] == TAB]
     check(len(entries) == len(plan["changes"]) + len(plan["new_rows"]),
           f"log has {len(entries)} rows for {len(plan['changes'])} changes "
           f"and {len(plan['new_rows'])} additions")

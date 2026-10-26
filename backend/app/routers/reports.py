@@ -219,6 +219,8 @@ def _rows(
                 uat_eta=ov.uat_eta if ov else "",
                 prod_eta=ov.prod_eta if ov else "",
                 comments=ov.comments if ov else "",
+                tpm_comment=(ov.tpm_comment or "") if ov else "",
+                package=(ov.package or "") if ov else "",
             )
         )
     # Unranked rows (rank 0) fall to the bottom in Jira order.
@@ -311,6 +313,7 @@ def export_report(
             ("Jira last updated", str(report.last_jira_sync_at or "never")),
             ("Rows", str(len(rows))),
         ],
+        quarter=quarter,
     )
 
     stamp = datetime.now().strftime("%Y%m%d_%H%M")

@@ -87,7 +87,7 @@ def age_a_week(blob: bytes) -> tuple[bytes, dict]:
     ws.cell(row=rows[1], column=head["NDP Status"]).value = (
         "Verified" if ndp_now != "Verified" else "Open"
     )
-    ws.cell(row=rows[0], column=head["Comments"]).value = "TPM: keep this comment"
+    ws.cell(row=rows[0], column=head["IT Comment"]).value = "TPM: keep this comment"
     ws.delete_rows(rows[2])
     buffer = BytesIO()
     wb.save(buffer)
@@ -242,7 +242,7 @@ def run(api: Api, folder: Path) -> int:
         sheet.cell(row=r, column=head["Backlog Key"]).value: r for r in range(2, sheet.max_row + 1)
     }
     check(
-        sheet.cell(row=rows[picked["status"]], column=head["Comments"]).value
+        sheet.cell(row=rows[picked["status"]], column=head["IT Comment"]).value
         == "TPM: keep this comment",
         "the update overwrote a comment",
     )

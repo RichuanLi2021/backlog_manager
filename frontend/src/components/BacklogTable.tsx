@@ -51,12 +51,15 @@ const COLUMNS: ColumnSpec[] = [
   { id: 'release_title', header: 'Release Title', wide: true },
   { id: 'ndp', header: 'NDP' },
   { id: 'ndp_status', header: 'NDP Status' },
+  { id: 'uat_eta', header: 'UAT ETA', editField: 'uat_eta' },
+  { id: 'prod_eta', header: 'PROD ETA', editField: 'prod_eta' },
   { id: 'ndp_deploy_date', header: 'NDP Deploy Date' },
   { id: 'key', header: 'Backlog Key' },
   { id: 'summary', header: 'Summary', wide: true },
   { id: 'issue_type', header: 'Issue Type' },
   { id: 'status', header: 'Status' },
   { id: 'assignee', header: 'Assignee' },
+  { id: 'package', header: 'Package', editField: 'package' },
   { id: 'developer', header: 'Developer', editField: 'developer' },
   { id: 'reporter', header: 'Reporter' },
   { id: 'priority', header: 'Priority' },
@@ -66,9 +69,9 @@ const COLUMNS: ColumnSpec[] = [
   { id: 'backlog_source', header: 'Backlog Source' },
   { id: 'est_h', header: 'Est h', numeric: true },
   { id: 'spent_h', header: 'Spent h', numeric: true },
-  { id: 'uat_eta', header: 'UAT ETA', editField: 'uat_eta' },
-  { id: 'prod_eta', header: 'PROD ETA', editField: 'prod_eta' },
-  { id: 'comments', header: 'Comments', wide: true, editField: 'comments' },
+  // Same order as the team's spreadsheet: IT Comment is the original Comments field.
+  { id: 'comments', header: 'IT Comment', wide: true, editField: 'comments' },
+  { id: 'tpm_comment', header: 'TPM Comment', wide: true, editField: 'tpm_comment' },
 ]
 
 const features = tableFeatures({

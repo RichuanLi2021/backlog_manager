@@ -33,7 +33,9 @@ from ..schemas import (
     FileUpdatePlan,
     StatusCount,
 )
+from . import sheet_standard
 from .excel_export import NDP_FILLS
+from .sheet_standard import active_tabs, frozen_tabs
 from .spreadsheet_layout import (
     ALL_ALIASES,
     JIRA_FIELDS,
@@ -77,7 +79,9 @@ FIELD_LABELS = {
     "developer": "Developer",
     "uat_eta": "UAT ETA",
     "prod_eta": "PROD ETA",
-    "comments": "Comments",
+    "comments": "IT Comment",
+    "tpm_comment": "TPM Comment",
+    "package": "Package",
 }
 
 # Timestamp labels the skill and this platform write into their `about` sheets.
@@ -113,7 +117,7 @@ def _targets(layout, current: list[BacklogRow]) -> list[Target]:
         indexed.setdefault(row.sheet, {})[row.key.upper()] = row
 
     out = []
-    for sheet_layout in layout.sheets:
+    for sheet_layout in active_tabs(layout.sheets):
         resolved = resolve_sheet(sheet_layout, sheets, by_key)
         out.append(Target(sheet_layout, resolved, indexed.get(resolved or "", {})))
     return out
@@ -200,7 +204,11 @@ def _plan_from(
         quarter=quarter,
         last_jira_sync_at=last_sync,
         sheets=[],
-        sheets_ignored=layout.ignored,
+        sheets_ignored=layout.ignored
+        + [
+            f"{name} (kept as a record: only the Priority_List tabs are updated)"
+            for name in frozen_tabs(layout.sheets)
+        ],
         changes=[],
         field_counts={},
         new_rows=[],
@@ -275,8 +283,10 @@ def plan_update(
     fields: tuple[str, ...] = JIRA_FIELDS,
 ) -> FileUpdatePlan:
     """Report what refreshing this file from the platform would change, without writing."""
+    data, reshaped = sheet_standard.standardize(data, filename)
     layout = read_layouts(data, filename, fields, ALL_ALIASES)
     plan, _ = _plan_from(layout, filename, current, kind, quarter, last_sync, fields)
+    plan.layout_changes = reshaped
     return plan
 
 
@@ -334,8 +344,10 @@ def build_updated_workbook(
     flag_gone: bool = True,
 ) -> tuple[bytes, FileUpdatePlan]:
     """Write the refreshed workbook, returning the bytes and what was done to it."""
+    data, reshaped = sheet_standard.standardize(data, filename)
     layout = read_layouts(data, filename, fields, ALL_ALIASES)
     plan, targets = _plan_from(layout, filename, current, kind, quarter, last_sync, fields)
+    plan.layout_changes = reshaped
     try:
         wb = load_workbook(BytesIO(data))
     except Exception as exc:  # already parsed once, so this is not a bad upload

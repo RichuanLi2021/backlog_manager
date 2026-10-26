@@ -83,19 +83,73 @@ def _token(stat: os.stat_result) -> str:
     return f"{stat.st_mtime_ns}-{stat.st_size}"
 
 
-def _open_here(path: Path) -> bool:
-    """Excel's owner file sits beside a workbook it has open on this machine.
+def _window_titles() -> list[str]:
+    """Titles of every top-level window on this desktop (Windows only)."""
+    if os.name != "nt":
+        return []
+    import ctypes
+    from ctypes import wintypes
 
-    Excel prefixes the whole name with ~$; Word-style truncation replaces the first
-    two characters instead. Both are checked. Someone editing in a browser leaves
-    no trace here, which is what the token check is for.
+    user32 = ctypes.windll.user32
+    titles: list[str] = []
+
+    @ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+    def collect(hwnd, _):
+        length = user32.GetWindowTextLengthW(hwnd)
+        if length:
+            buffer = ctypes.create_unicode_buffer(length + 1)
+            user32.GetWindowTextW(hwnd, buffer, length + 1)
+            titles.append(buffer.value)
+        return True
+
+    user32.EnumWindows(collect, 0)
+    return titles
+
+
+def _locked(path: Path) -> bool:
+    """Whether another program holds the file so it cannot be opened exclusively."""
+    if os.name != "nt":
+        return False
+    import ctypes
+
+    kernel32 = ctypes.windll.kernel32
+    kernel32.CreateFileW.restype = ctypes.c_void_p
+    generic_read, open_existing, sharing_violation, lock_violation = 0x80000000, 3, 32, 33
+    handle = kernel32.CreateFileW(str(path), generic_read, 0, None, open_existing, 0x80, None)
+    if handle in (None, ctypes.c_void_p(-1).value):
+        return kernel32.GetLastError() in (sharing_violation, lock_violation)
+    kernel32.CloseHandle(ctypes.c_void_p(handle))
+    return False
+
+
+def in_use(path: Path, titles: list[str] | None = None) -> str | None:
+    """Why the workbook is open somewhere on this PC, or None if it is free.
+
+    Three signals, because each misses a case the others catch:
+    - Excel's ~$ owner file, left beside a workbook opened from a plain folder.
+      Opened from OneDrive or SharePoint, Excel leaves none.
+    - A window titled with the workbook: desktop Excel, or Excel for the web in a
+      browser tab. This is the case that silently undid updates — AutoSave writes
+      the open copy back over anything saved underneath it.
+    - The file refusing an exclusive open: Excel, or OneDrive mid-sync.
     """
-    return any(
-        (path.parent / owner).exists() for owner in (f"~${path.name}", f"~${path.name[2:]}")
-    )
+    if any((path.parent / o).exists() for o in (f"~${path.name}", f"~${path.name[2:]}")):
+        return "it is open in Excel on this PC"
+    stem = path.stem.lower()
+    for title in _window_titles() if titles is None else titles:
+        lowered = title.lower()
+        if lowered.startswith(stem) and "excel" in lowered:
+            return f'it is open in Excel on this PC ("{title}")'
+    if _locked(path):
+        return "it is locked by another program, Excel or OneDrive mid-sync"
+    return None
 
 
-def info(path: Path) -> FileInfo:
+def _open_here(path: Path, titles: list[str] | None = None) -> bool:
+    return in_use(path, titles) is not None
+
+
+def info(path: Path, titles: list[str] | None = None) -> FileInfo:
     stat = path.stat()
     attrs = getattr(stat, "st_file_attributes", 0)
     return FileInfo(
@@ -105,7 +159,7 @@ def info(path: Path) -> FileInfo:
         modified=datetime.fromtimestamp(stat.st_mtime),
         token=_token(stat),
         kind=guess_kind(path.name),
-        open_here=_open_here(path),
+        open_here=_open_here(path, titles),
         cloud_only=bool(attrs & RECALL_ON_DATA_ACCESS),
     )
 
@@ -115,8 +169,9 @@ def list_workbooks(quarter: str) -> list[FileInfo]:
     where = folder(quarter)
     if where is None or not where.is_dir():
         return []
+    titles = _window_titles()
     files = [
-        info(p)
+        info(p, titles)
         for p in where.iterdir()
         if p.is_file()
         and p.suffix.lower() in WORKBOOK_SUFFIXES
@@ -160,10 +215,12 @@ def replace(path: Path, data: bytes, expected_token: str) -> Path:
             "really there now.",
             409,
         )
-    if current.open_here:
+    busy = in_use(path)
+    if busy:
         raise SharePointError(
-            f"{path.name} is open in Excel on this PC. Close it there first, so your "
-            "unsaved changes and this update cannot overwrite each other.",
+            f"{path.name} cannot be updated because {busy}. Close it everywhere first: "
+            "while Excel has it open, AutoSave writes its copy back over this update a "
+            "few minutes later and the changes disappear. Nothing was changed.",
             409,
         )
 

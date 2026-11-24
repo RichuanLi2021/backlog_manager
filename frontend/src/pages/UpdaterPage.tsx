@@ -3,7 +3,10 @@ import { useParams } from 'react-router-dom'
 
 import {
   downloadRefreshedFile,
+  createSharePointReport,
   getSharePointFolder,
+  importSharePointReport,
+  openSharePointFile,
   planFileRefresh,
   scanSharePointFile,
   updateSharePointFile,
@@ -86,6 +89,8 @@ function SharePointPanel({
   busy,
   onScan,
   onReload,
+  onCreate,
+  onImport,
 }: {
   folder: SharePointFolder | null
   kind: string
@@ -94,10 +99,13 @@ function SharePointPanel({
   busy: boolean
   onScan: (name: string) => void
   onReload: () => void
+  onCreate: () => void
+  onImport: (file: File) => void
 }) {
+  const importPicker = useRef<HTMLInputElement>(null)
   if (!folder) return <div className="muted">Looking for the {quarter} folder...</div>
 
-  if (!folder.found) {
+  if (!folder.root_found) {
     return (
       <div className="sp-setup">
         <strong>The GLreport folder is not on this PC yet.</strong> One-time setup, about a
@@ -125,6 +133,61 @@ function SharePointPanel({
           location can be set with <code>SHAREPOINT_DIR</code> in <code>backend/.env</code>.
         </div>
         <button onClick={onReload}>Check again</button>
+      </div>
+    )
+  }
+
+  const label = kind.replace('_', ' + ')
+  if (!folder.files.some((f) => f.matches_report)) {
+    return (
+      <div className="sp-setup sp-empty">
+        <strong>
+          There is no {label} {quarter} report in SharePoint yet.
+        </strong>
+        <div className="muted">
+          It goes in <code>GL_BL\{quarter}\Updated</code>
+          {folder.found ? '' : ', which will be created'}, named{' '}
+          <code>
+            {kind}_{quarter}_updated_&lt;today&gt;.xlsx
+          </code>
+          .
+        </div>
+        <div className="edit-bar">
+          <button
+            className="primary"
+            onClick={onCreate}
+            disabled={busy}
+            title="Build it from the platform's live report: every region as a Priority_List tab"
+          >
+            Create {quarter} report
+          </button>
+          <button
+            onClick={() => importPicker.current?.click()}
+            disabled={busy}
+            title="Put a workbook from this PC into the folder as the quarter's report"
+          >
+            Import report
+          </button>
+          <button onClick={onReload} disabled={busy}>
+            Refresh
+          </button>
+        </div>
+        <input
+          ref={importPicker}
+          type="file"
+          accept=".xlsx,.xlsm"
+          hidden
+          onChange={(e) => {
+            const picked = e.target.files?.[0]
+            e.target.value = ''
+            if (picked) onImport(picked)
+          }}
+        />
+        {folder.files.length > 0 && (
+          <div className="muted">
+            Also in the folder, for other reports: {folder.files.map((f) => f.name).join(', ')}
+          </div>
+        )}
       </div>
     )
   }
@@ -361,7 +424,9 @@ export default function UpdaterPage() {
         flag_gone: flagGone,
       })
       setSaved(
-        `Updated ${result.file.name} on SharePoint: ${result.cells_updated} cells, ` +
+        `Updated ${result.file.name} on SharePoint` +
+          (result.renamed_from ? ` (renamed from ${result.renamed_from})` : '') +
+          `: ${result.cells_updated} cells, ` +
           `${result.rows_added} backlogs added, ${result.rows_flagged} flagged. OneDrive is ` +
           `uploading it now. The previous version is in SharePoint's version history, ` +
           `and a copy was kept at ${result.backup}.`,
@@ -377,6 +442,44 @@ export default function UpdaterPage() {
       setError((e as Error).message)
     } finally {
       setBusy(null)
+    }
+  }
+
+  // Create / Import change the shared folder, so they need to know who is asking. A
+  // request made before identifying waits here and runs once someone is identified.
+  const pendingRun = useRef<((user: UserInfo) => void) | null>(null)
+
+  const startReport = async (make: (user: UserInfo) => Promise<SharePointFile>) => {
+    const run = async (user: UserInfo) => {
+      setBusy('writing')
+      setError(null)
+      try {
+        const made = await make(user)
+        setSaved(`Created ${made.name} in SharePoint. OneDrive is uploading it now.`)
+        await loadFolder()
+        await scan(made.name, true)
+      } catch (e) {
+        setError((e as Error).message)
+      } finally {
+        setBusy(null)
+      }
+    }
+    if (editor) {
+      run(editor)
+    } else {
+      pendingRun.current = run
+      setPromptOpen(true)
+    }
+  }
+  const openInExcel = async () => {
+    if (!scanned) return
+    setError(null)
+    try {
+      await openSharePointFile(kind, quarter, scanned.name)
+      // Excel holding it is what greys out Update; show that straight away.
+      window.setTimeout(() => loadFolder(), 4000)
+    } catch (e) {
+      setError((e as Error).message)
     }
   }
 
@@ -507,6 +610,14 @@ export default function UpdaterPage() {
                   busy={busy !== null}
                   onScan={(name) => scan(name)}
                   onReload={refresh}
+                  onCreate={() =>
+                    startReport((user) => createSharePointReport(kind, quarter, user.email))
+                  }
+                  onImport={(picked) =>
+                    startReport((user) =>
+                      importSharePointReport(kind, quarter, picked, user.email),
+                    )
+                  }
                 />
               ) : (
               <div
@@ -719,6 +830,7 @@ export default function UpdaterPage() {
                 Flag {plan.gone_rows.length} dropped
               </label>
               {source === 'sharepoint' ? (
+                <>
                 <button
                   className="primary"
                   style={{ marginLeft: 'auto' }}
@@ -728,6 +840,14 @@ export default function UpdaterPage() {
                 >
                   {busy === 'writing' ? 'Updating SharePoint...' : 'Update on SharePoint'}
                 </button>
+                <button
+                  onClick={openInExcel}
+                  disabled={busy !== null || !scanned}
+                  title="Open this workbook in Excel. Close it again before the next update."
+                >
+                  Open
+                </button>
+                </>
               ) : (
                 <button
                   className="primary"
@@ -740,7 +860,9 @@ export default function UpdaterPage() {
               )}
             </div>
 
-            {(plan.new_rows.length > 0 || plan.gone_rows.length > 0) && (
+            {(plan.new_rows.length > 0 ||
+              plan.gone_rows.length > 0 ||
+              plan.outside_rows.length > 0) && (
               <div className="row-notes">
                 {plan.new_rows.length > 0 && (
                   <div className="card notes-card is-new">
@@ -769,6 +891,36 @@ export default function UpdaterPage() {
                                     {r.ndp_status}
                                   </span>
                                 )}
+                              </li>
+                            ))}
+                          </ul>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+                {plan.outside_rows.length > 0 && (
+                  <div className="card notes-card is-outside">
+                    <div className="notes-head">
+                      <span className="badge tag-status">Direct</span>
+                      Refreshed straight from Jira ({plan.outside_rows.length})
+                    </div>
+                    <div className="muted">
+                      The report leaves these out (100-Done with no hours logged, for example),
+                      so each was fetched from Jira by its key and is brought up to date like any
+                      other row.
+                    </div>
+                    <div className="notes-scroll">
+                      {groupBy(plan.outside_rows, (r) => r.sheet).map(([tab, rows]) => (
+                        <div key={tab}>
+                          <div className="notes-sheet">
+                            {tab} ({rows.length})
+                          </div>
+                          <ul>
+                            {rows.map((r) => (
+                              <li key={`${r.sheet}:${r.key}`}>
+                                <strong>{r.key}</strong>{' '}
+                                <span className="muted">row {r.row}</span>
                               </li>
                             ))}
                           </ul>
@@ -881,11 +1033,16 @@ export default function UpdaterPage() {
           onCancel={() => {
             setPromptOpen(false)
             setPendingUpdate(false)
+            pendingRun.current = null
           }}
           onIdentified={(user) => {
             setPromptOpen(false)
             setEditor(user)
-            if (pendingUpdate) {
+            if (pendingRun.current) {
+              const run = pendingRun.current
+              pendingRun.current = null
+              run(user)
+            } else if (pendingUpdate) {
               // They pressed Update on SharePoint before saying who they are.
               setPendingUpdate(false)
               updateOnSharePoint(user)

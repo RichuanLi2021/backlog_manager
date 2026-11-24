@@ -9,6 +9,7 @@ import type {
   FileUpdatePlan,
   NdpAgeRefresh,
   NdpAgeRules,
+  SharePointFile,
   SharePointFolder,
   SharePointScan,
   SharePointUpdateResult,
@@ -264,6 +265,33 @@ export const getSharePointFolder = (kind: string, quarter: string) =>
 
 export const scanSharePointFile = (kind: string, quarter: string, name: string) =>
   request<SharePointScan>(`/sharepoint/${kind}/${quarter}/scan`, {
+    method: 'POST',
+    body: JSON.stringify({ name }),
+  })
+
+/** Start the quarter's working file in SharePoint from the platform's report. */
+export const createSharePointReport = (kind: string, quarter: string, authorEmail: string) =>
+  request<SharePointFile>(`/sharepoint/${kind}/${quarter}/create`, {
+    method: 'POST',
+    body: JSON.stringify({ author_email: authorEmail }),
+  })
+
+/** Copy a workbook from this PC into the quarter's SharePoint folder. */
+export function importSharePointReport(
+  kind: string,
+  quarter: string,
+  file: File,
+  authorEmail: string,
+) {
+  const form = new FormData()
+  form.append('file', file)
+  form.append('author_email', authorEmail)
+  return upload<SharePointFile>(`/sharepoint/${kind}/${quarter}/import`, form)
+}
+
+/** Open the workbook in desktop Excel on the PC running the platform. */
+export const openSharePointFile = (kind: string, quarter: string, name: string) =>
+  request<{ opened: string }>(`/sharepoint/${kind}/${quarter}/open`, {
     method: 'POST',
     body: JSON.stringify({ name }),
   })

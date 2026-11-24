@@ -63,6 +63,28 @@ class Api:
             return {"__error__": e.code, "detail": json.loads(e.read().decode()).get("detail")}
 
 
+def post_multipart(api, path, filename, blob, fields):
+    import uuid
+    b = uuid.uuid4().hex
+    crlf = chr(13) + chr(10)
+    parts = [
+        f'--{b}{crlf}Content-Disposition: form-data; name="{k}"{crlf}{crlf}{v}{crlf}'.encode()
+        for k, v in fields.items()
+    ]
+    parts.append(
+        f'--{b}{crlf}Content-Disposition: form-data; name="file"; filename="{filename}"{crlf}'
+        f"Content-Type: application/octet-stream{crlf}{crlf}".encode()
+    )
+    parts += [blob, f"{crlf}--{b}--{crlf}".encode()]
+    req = urllib.request.Request(f"{api.base}{path}", method="POST", data=b"".join(parts),
+                                 headers={"Content-Type": f"multipart/form-data; boundary={b}"})
+    try:
+        with urllib.request.urlopen(req, timeout=120) as r:
+            return json.loads(r.read().decode())
+    except urllib.error.HTTPError as e:
+        return {"__error__": e.code, "detail": json.loads(e.read().decode()).get("detail")}
+
+
 def age_a_week(blob: bytes) -> tuple[bytes, dict]:
     """Roll statuses back, change an NDP, and drop a row, as a week-old copy would be."""
     wb = load_workbook(BytesIO(blob))
@@ -236,6 +258,13 @@ def run(api: Api, folder: Path) -> int:
     )
     check(Path(result["backup"]).read_bytes() == before, "the backup is not the pre-update file")
 
+    from datetime import date
+    renamed = folder / result["file"]["name"]
+    check(result["file"]["name"] == f"GL_Summary_{QUARTER}_{date.today():%Y_%m_%d}.xlsx",
+          f"the updated file should carry today's date: {result['file']['name']}")
+    check(result["renamed_from"] == target.name, f"renamed_from wrong: {result['renamed_from']}")
+    check(not target.exists(), "the old name should be gone, not left beside the new one")
+    target = renamed
     sheet = load_workbook(BytesIO(target.read_bytes()))[picked["sheet"]]
     head = {c.value: c.column for c in sheet[1]}
     rows = {
@@ -257,6 +286,42 @@ def run(api: Api, folder: Path) -> int:
         f"update: {result['cells_updated']} cells, {result['rows_added']} added, comment kept; "
         f"re-scan finds {len(after['plan']['changes'])} stale cells"
     )
+
+    # ---- a quarter with no report yet: create one, import one ---------------------------
+    from datetime import date
+    day = f"{date.today():%Y_%m_%d}"
+    root = folder.parent.parent
+    new_q = "2027Q1"
+    empty = api.call("GET", f"/sharepoint/{KIND}/{new_q}")
+    check(empty["root_found"] and not empty["found"] and empty["files"] == [],
+          f"a quarter with no folder should read as root found, folder missing: {empty}")
+    denied = api.call("POST", f"/sharepoint/{KIND}/{new_q}/create", {"author_email": "nobody@example.com"})
+    check(denied.get("__error__") == 404, f"a non-member should not create a report: {denied}")
+    made = api.call("POST", f"/sharepoint/{KIND}/{new_q}/create", {"author_email": USER["email"]})
+    if "__error__" in made:
+        failures.append(f"create failed: {made}")
+    else:
+        where = root / new_q / "Updated" / made["name"]
+        check(made["name"] == f"{KIND}_{new_q}_updated_{day}.xlsx", f"created name: {made['name']}")
+        check(where.is_file(), f"not created at {where}")
+        tabs = load_workbook(BytesIO(where.read_bytes())).sheetnames
+        check(any(t.endswith("_Priority_List") for t in tabs), f"created tabs: {tabs}")
+        rescan = api.call("POST", f"/sharepoint/{KIND}/{new_q}/scan", {"name": made["name"]})
+        check("__error__" not in rescan and rescan["plan"]["changes"] == [],
+              f"a just-created report should scan as current: {str(rescan)[:200]}")
+        again = api.call("POST", f"/sharepoint/{KIND}/{new_q}/create", {"author_email": USER["email"]})
+        check(again.get("__error__") == 409, f"a second create the same day must not overwrite: {again}")
+        print(f"create: {made['name']} in {new_q}/Updated, tabs {tabs[:2]}..., second create refused")
+
+    ar_blob = api.call("GET", f"/reports/AR/{QUARTER}/export", raw=True)
+    imported = post_multipart(api, f"/sharepoint/AR/{QUARTER}/import", "my copy.xlsx", ar_blob,
+                              {"author_email": USER["email"]})
+    check(imported.get("name") == f"AR_{QUARTER}_updated_{day}.xlsx", f"import: {imported}")
+    check((folder / f"AR_{QUARTER}_updated_{day}.xlsx").is_file(), "imported file not in the folder")
+    junk = post_multipart(api, f"/sharepoint/GL/2026Q3/import", "notes.xlsx", b"not a workbook",
+                          {"author_email": USER["email"]})
+    check(junk.get("__error__") == 400, f"a non-workbook import should be refused: {junk}")
+    print(f"import: saved as {imported.get('name')}, non-workbook refused")
 
     # ---- NDP ages, from the live Jira changelog ---------------------------------------
     refreshed = api.call("POST", f"/reports/{KIND}/{QUARTER}/ndp-ages")

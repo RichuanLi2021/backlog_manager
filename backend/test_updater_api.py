@@ -147,7 +147,11 @@ def main():
     if "__error__" in fresh:
         print(f"plan failed on a fresh export: {fresh}")
         return 1
-    check(fresh["changes"] == [], f"a fresh export looked stale: {fresh['changes'][:3]}")
+    # An export carries archived rows with their last-seen data; those are fetched live
+    # by key, and may rightly have moved on. Everything the report returns is current.
+    direct = {o["key"] for o in fresh["outside_rows"]}
+    in_report = [c for c in fresh["changes"] if c["key"] not in direct]
+    check(in_report == [], f"a fresh export looked stale: {in_report[:3]}")
     check(fresh["new_rows"] == [], f"a fresh export was missing rows: {fresh['new_rows'][:3]}")
     check(fresh["sheets"][0]["resolved_to"] == SHEET, f"sheet not resolved: {fresh['sheets']}")
     print(f"fresh export: 0 stale cells, {fresh['unchanged_cells']} already current")

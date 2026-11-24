@@ -128,10 +128,27 @@ def test_open_in_excel_without_an_owner_file():
     print("open in Excel: window titles and exclusive locks both refuse the update")
 
 
+def test_dated_names():
+    from datetime import date
+    day = date(2026, 11, 11)
+    for name, want in (
+        ("GL_2026Q4_updated_20261014_2006.xlsx", "GL_2026Q4_updated_2026_11_11.xlsx"),
+        ("GL_2026Q4_updated_2026_11_04.xlsx", "GL_2026Q4_updated_2026_11_11.xlsx"),
+        ("GL_2026Q4_updated_2026_11_11.xlsx", "GL_2026Q4_updated_2026_11_11.xlsx"),
+        ("GL_Summary_2026Q4.xlsm", "GL_Summary_2026Q4_2026_11_11.xlsm"),
+        ("GL_report_20261111.xlsx", "GL_report_2026_11_11.xlsx"),
+    ):
+        got = sharepoint.dated_name(name, day)
+        check(got == want, f"{name} -> {got}, want {want}")
+    path = sharepoint.locate(QUARTER, "GL_Summary_2026Q4.xlsx")
+    refused(lambda: sharepoint.check_rename(path, "AR_GL_Summary_2026Q4.xlsx"), 409, "already exists")
+    print("dated names: timestamp replaced, quarter kept, clash refused")
+
+
 def main():
     setup()
     for test in (test_finding_and_listing, test_names_cannot_leave_the_folder, test_write_guards,
-                 test_open_in_excel_without_an_owner_file):
+                 test_open_in_excel_without_an_owner_file, test_dated_names):
         try:
             test()
         except Exception as exc:

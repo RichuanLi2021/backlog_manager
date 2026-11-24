@@ -1,7 +1,11 @@
 // Same palette and precedence the jira-rel-review skill uses for Excel fills.
+// Listed in the order an NDP moves through them, which is also the legend's order.
+// IT Leader Approved is a deeper green than Verified so the two read apart.
 const NDP_STATUS_CLASS: Record<string, string> = {
+  Open: 'ndp-open',
   'QC Approved': 'ndp-qc',
   'IIC Approved': 'ndp-iic',
+  'IT Leader Approved': 'ndp-leader',
   'IT Exec Approved': 'ndp-exec',
   Verified: 'ndp-verified',
 }

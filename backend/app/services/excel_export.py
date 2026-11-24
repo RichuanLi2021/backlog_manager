@@ -50,8 +50,10 @@ WHITE_BOLD = Font(bold=True, color="FFFFFF")
 
 # Same palette the skill uses for NDP status cells.
 NDP_FILLS = {
+    "Open": PatternFill("solid", fgColor="DDEBF7"),
     "QC Approved": PatternFill("solid", fgColor="F8CBAD"),
     "IIC Approved": PatternFill("solid", fgColor="FFF2CC"),
+    "IT Leader Approved": PatternFill("solid", fgColor="A9D08E"),
     "IT Exec Approved": PatternFill("solid", fgColor="FFE699"),
     "Verified": PatternFill("solid", fgColor="C6EFCE"),
 }

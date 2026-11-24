@@ -253,6 +253,103 @@ def test_only_chosen_columns_are_touched():
     print(f"scoped refresh: only Status moved, {len(keys)} rows still in the sheet")
 
 
+def test_ndp_status_cells_are_painted_by_status():
+    """Every NDP Status cell carries its status colour, changed or not."""
+    wb = load_workbook(BytesIO(week_old_export()))
+    ws = wb["NA_GL"]
+    ws.cell(row=3, column=COL["NDP Status"]).fill = PatternFill("solid", fgColor="DDEBF7")  # Open blue
+    ws.cell(row=4, column=COL["Summary"]).fill = PatternFill("solid", fgColor="FFFF00")    # someone's own
+    buffer = BytesIO()
+    wb.save(buffer)
+    current = current_backlog()
+    current[1] = current[1].model_copy(update={"ndp_status": "Submitted"})  # CISGL-2466 moved on
+    updated, _ = build_updated_workbook(buffer.getvalue(), "GL.xlsx", current, "GL", "2026Q3", None)
+    out = load_workbook(BytesIO(updated))["NA_GL"]
+    col = by_header(out)
+    rows = {out.cell(row=r, column=col["Backlog Key"]).value: r for r in range(2, out.max_row + 1)}
+
+    def rgb(key, header):
+        c = out.cell(row=rows[key], column=col[header]).fill.fgColor.rgb
+        return c[-6:].upper() if isinstance(c, str) else ""
+
+    check(out.cell(row=rows["CISGL-2466"], column=col["NDP Status"]).value == "Submitted",
+          "status did not move to Submitted")
+    check(rgb("CISGL-2466", "NDP Status") not in ("DDEBF7",),
+          "a cell that left Open for Submitted kept Open's blue")
+    check(rgb("CISGL-2451", "NDP Status") == "F8CBAD", "QC Approved should be orange-pink")
+    check(rgb("CISGL-9999", "NDP Status") == "DDEBF7",
+          "an NDP still Open should be painted blue even though nothing changed")
+    check(rgb("CISGL-9999", "Summary") == "FFFF00", "someone's own highlight was touched")
+    print("NDP Status: unchanged Open painted blue, stale blue cleared, own highlights kept")
+
+
+def test_routine_releases_are_excluded():
+    from app.services.exclusions import excluded_release
+    for title in ("Daily Integrity Check in 2026_Q4", "daily integrity check in 2026_Q3",
+                  "Kill DW_PROD work", "Kill SP clean-up"):
+        check(excluded_release(title), f"{title!r} should be excluded")
+    for title in ("GL Integrity Report enhancements", "Skill matrix", "RDS report auto book", "", None):
+        check(not excluded_release(title), f"{title!r} should be kept")
+    print("exclusions: Daily Integrity Check and Kill releases out, look-alikes kept")
+
+
+def test_archived_data_never_overwrites_the_file():
+    """Jira stopped returning CISGL-2466; the platform still holds its last-seen status.
+
+    That status can be older than the file's: this once turned a 100-Done back into
+    20-RequirementCompleted. The row is flagged and left exactly as it is.
+    """
+    current = current_backlog()
+    current[1] = current[1].model_copy(update={"archived": True, "status": "10-Placeholder"})
+    updated, plan = build_updated_workbook(week_old_export(), "GL.xlsx", current, "GL", "2026Q3", None)
+    check(not [c for c in plan.changes if c.key == "CISGL-2466"],
+          f"an archived row was planned for refresh: {[c for c in plan.changes if c.key == 'CISGL-2466']}")
+    out = load_workbook(BytesIO(updated))["NA_GL"]
+    col = by_header(out)
+    row = next(r for r in range(2, out.max_row + 1) if out.cell(row=r, column=col["Backlog Key"]).value == "CISGL-2466")
+    check(out.cell(row=row, column=col["Status"]).value == "20-RequirementCompleted",
+          "an archived row's stale status was written over the file")
+    check("left as it was" in (out.cell(row=row, column=col["Update Status"]).value or ""),
+          "the archived row should be noted as left as it was")
+    print("archived row: flagged, left exactly as it was")
+
+
+def test_rows_outside_the_query_are_refreshed_by_key():
+    """CISGL-9999 is not in the report at all, but Jira knows it: fetched by key, it moved on."""
+    direct = row("CISGL-9999", summary="Dropped requirement", status="100-Done",
+                 ndp="NDP-7539", ndp_status="Verified")
+    updated, plan = build_updated_workbook(
+        week_old_export(), "GL.xlsx", current_backlog(), "GL", "2026Q3", None,
+        outside={"CISGL-9999": direct},
+    )
+    moved = {(c.key, c.field): c.current for c in plan.changes}
+    check(moved.get(("CISGL-9999", "status")) == "100-Done", f"status not refreshed by key: {moved}")
+    check([o.key for o in plan.outside_rows] == ["CISGL-9999"], f"outside rows: {plan.outside_rows}")
+    check("CISGL-9999" not in [g.key for g in plan.gone_rows], "a refreshed row was also listed as gone")
+    out = load_workbook(BytesIO(updated))["NA_GL"]
+    col = by_header(out)
+    r = next(r for r in range(2, out.max_row + 1) if out.cell(row=r, column=col["Backlog Key"]).value == "CISGL-9999")
+    check(out.cell(row=r, column=col["Status"]).value == "100-Done", "status not written")
+    check(out.cell(row=r, column=col["IT Comment"]).value == "stakeholder asked for this",
+          "the row's comment was touched")
+    check("refreshed directly from Jira" in (out.cell(row=r, column=col["Update Status"]).value or ""),
+          "the row should say it was refreshed directly from Jira")
+    print("outside the query: refreshed by key, noted, comment kept")
+
+
+def test_which_projects_land_in_which_region():
+    from app.services.jira_sync import _load_skill
+    skill = _load_skill()
+    for key, want in (("RPA-2716", "NA"), ("TAX-217", "NA"), ("CISGL-1", "NA"), ("CISAR-1", "NA"),
+                      ("WBRCC-3619", "LAC"), ("MCAM-1", "LAC"), ("WMCC-1", "LAC"),
+                      ("ITDRIVEN-3870", None), ("KSPE-3293", None), ("MCADM-6", None),
+                      ("RPAX-1", None), ("TAXES-1", None)):
+        got = skill.infer_region({"key": key, "labels": "2026Q4"})
+        check(got == want, f"{key} should be {want}, got {got}")
+    check(skill.should_exclude_record({"key": "ITDRIVEN-3870", "labels": ""}), "ITDRIVEN not excluded")
+    print("regions: RPA, TAX NA; WBRCC LAC; ITDRIVEN, KSPE out; look-alike projects not matched")
+
+
 def test_a_file_for_the_wrong_report_says_so():
     plan = plan_update(
         week_old_export(), "GL_2026Q3.xlsx",
@@ -273,6 +370,11 @@ def main():
         test_a_repeated_priority_tab_is_not_counted_twice,
         test_refresh_keeps_every_edit_and_the_highlight,
         test_only_chosen_columns_are_touched,
+        test_ndp_status_cells_are_painted_by_status,
+        test_routine_releases_are_excluded,
+        test_archived_data_never_overwrites_the_file,
+        test_rows_outside_the_query_are_refreshed_by_key,
+        test_which_projects_land_in_which_region,
         test_a_file_for_the_wrong_report_says_so,
     ):
         try:

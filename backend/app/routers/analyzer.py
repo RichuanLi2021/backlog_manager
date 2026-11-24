@@ -29,7 +29,7 @@ from ..schemas import (
     SnapshotInfo,
     UserInfo,
 )
-from ..services import spreadsheet_analyzer, spreadsheet_updater
+from ..services import jira_sync, spreadsheet_analyzer, spreadsheet_updater
 from ..services.spreadsheet_analyzer import USER_FIELDS, AnalyzerError
 from ..services.spreadsheet_layout import JIRA_FIELDS
 from .reports import _report_info, _rows
@@ -445,6 +445,34 @@ async def download_updated_file(
     )
 
 
+def outside_rows(data: bytes, name: str, current, kind: str, quarter: str, fields):
+    """Fetch, by key, the file's backlogs the report's own query no longer returns.
+
+    Returns (rows to refresh them from, a warning if Jira could not be asked). A plan
+    without them says which rows those are; Jira is then asked once for all of them.
+    """
+    first = spreadsheet_updater.plan_update(data, name, current, kind, quarter, None, fields)
+    keys = [g.key for g in first.gone_rows if not g.reason.startswith("routine release")]
+    if not keys:
+        return {}, None
+    try:
+        fetched = jira_sync.fetch_by_keys(keys, kind, quarter)
+    except Exception as exc:  # Jira down or PAT expired: refresh what the report has
+        return {}, (
+            f"{len(keys)} backlog(s) are outside the report's Jira query and could not be "
+            f"fetched directly ({type(exc).__name__}: {exc}); they are left as they are."
+        )
+    rows = {
+        key: BacklogRow(
+            id=0,
+            archived=False,
+            **{k: v for k, v in row.items() if k in BacklogRow.model_fields and k not in ("id", "archived")},
+        )
+        for key, row in fetched.items()
+    }
+    return rows, None
+
+
 def _fields(selected: str | None) -> tuple[str, ...]:
     """Which Jira columns to refresh. Empty means all of them."""
     if not selected or not selected.strip():
@@ -474,15 +502,15 @@ async def plan_file_refresh(
     report = _report_info(db, kind, quarter)
 
     try:
-        return spreadsheet_updater.plan_update(
-            data,
-            file.filename or "upload.xlsx",
-            _current(db, kind, quarter),
-            kind,
-            quarter,
-            report.last_jira_sync_at,
-            _fields(fields),
+        name = file.filename or "upload.xlsx"
+        current = _current(db, kind, quarter)
+        outside, warning = outside_rows(data, name, current, kind, quarter, _fields(fields))
+        plan = spreadsheet_updater.plan_update(
+            data, name, current, kind, quarter, report.last_jira_sync_at, _fields(fields), outside
         )
+        if warning:
+            plan.warnings.append(warning)
+        return plan
     except AnalyzerError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -506,16 +534,19 @@ async def download_refreshed_file(
     name = file.filename or "upload.xlsx"
 
     try:
+        current = _current(db, kind, quarter)
+        outside, _warning = outside_rows(data, name, current, kind, quarter, _fields(fields))
         updated, _plan = spreadsheet_updater.build_updated_workbook(
             data,
             name,
-            _current(db, kind, quarter),
+            current,
             kind,
             quarter,
             report.last_jira_sync_at,
             _fields(fields),
             add_new=add_new,
             flag_gone=flag_gone,
+            outside=outside,
         )
     except AnalyzerError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc

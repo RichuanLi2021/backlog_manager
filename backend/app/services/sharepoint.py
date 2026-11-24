@@ -13,9 +13,10 @@ half-written workbook.
 from __future__ import annotations
 
 import os
+import re
 import uuid
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import date, datetime
 from pathlib import Path
 
 from ..config import SHAREPOINT_BACKUP_DIR, SHAREPOINT_DIR, SHAREPOINT_SUBDIR
@@ -243,3 +244,68 @@ def replace(path: Path, data: bytes, expected_token: str) -> Path:
     finally:
         staging.unlink(missing_ok=True)
     return backup
+
+
+# A trailing date or timestamp in a file name: _20261014_2006, _2026_11_11, _20261111.
+_STAMP = re.compile(r"_(\d{8}_\d{4}|\d{4}_\d{2}_\d{2}|\d{8})$")
+
+
+def dated_name(name: str, day: date) -> str:
+    """The file name carrying `day`, as the date the workbook was last brought current.
+
+    GL_2026Q4_updated_20261014_2006.xlsx -> GL_2026Q4_updated_2026_11_11.xlsx. A name
+    with no date gets one appended; one already dated today is returned unchanged.
+    """
+    path = Path(name)
+    stem = _STAMP.sub("", path.stem)
+    return f"{stem}_{day:%Y_%m_%d}{path.suffix}"
+
+
+def check_rename(path: Path, new_name: str):
+    """Refuse up front if the dated name already belongs to a different file."""
+    target = path.with_name(new_name)
+    if target != path and target.exists():
+        raise SharePointError(
+            f"{new_name} already exists in the folder, so {path.name} cannot take that "
+            "name. Move or rename one of them, then update again. Nothing was changed.",
+            409,
+        )
+
+
+def rename(path: Path, new_name: str) -> Path:
+    """Give the file its new name. OneDrive syncs it as a rename, so SharePoint keeps
+    the file's version history and its sharing links."""
+    target = path.with_name(new_name)
+    if target == path:
+        return path
+    os.rename(path, target)
+    return target
+
+
+def report_name(kind: str, quarter: str, day: date) -> str:
+    """A new quarter's working file: GL_2027Q1_updated_2026_11_23.xlsx."""
+    return f"{kind}_{quarter}_updated_{day:%Y_%m_%d}.xlsx"
+
+
+def write_new(quarter: str, name: str, data: bytes) -> Path:
+    """Put a new workbook in the quarter's folder, creating <quarter>/Updated as needed.
+
+    Never replaces anything: a file of that name already there is refused.
+    """
+    base = root()
+    if base is None:
+        raise SharePointError("The GLreport folder is not on this PC.", 404)
+    where = base / SHAREPOINT_SUBDIR.format(quarter=quarter)
+    target = where / name
+    if target.exists():
+        raise SharePointError(
+            f"{name} already exists in the {quarter} folder. Nothing was changed.", 409
+        )
+    where.mkdir(parents=True, exist_ok=True)
+    staging = where / f".~bm-{uuid.uuid4().hex}.tmp"
+    try:
+        staging.write_bytes(data)
+        os.replace(staging, target)
+    finally:
+        staging.unlink(missing_ok=True)
+    return target

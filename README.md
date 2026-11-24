@@ -65,11 +65,33 @@ Est h | Spent h | UAT ETA | PROD ETA | Comments
 
 | Region | Rule |
 |--------|------|
-| **NA** | Key starts with `CISGL`, `CISAR`, or `CIS` (CISGL/CISAR always NA, even if LAC-labelled) |
-| **LAC** | Key starts with `MCAM`, `WMCC`, or has label token `LAC` |
-| **Exclude** | Key starts with `KSPE`, or label contains `gl-killsp` |
+| **NA** | Key starts with `CISGL`, `CISAR`, `CIS`, `RPA-` or `TAX-` (CISGL/CISAR always NA, even if LAC-labelled) |
+| **LAC** | Key starts with `MCAM`, `WMCC`, `WBRCC-`, or has label token `LAC` |
+| **Exclude** | Key starts with `KSPE-` or `ITDRIVEN-`, or label contains `gl-killsp` |
+
+Other projects stay out until they are added here. RPA, TAX and WBRCC were placed by their
+Jira `Request Region`.
 
 Fetch from both NA and LAC JQL, merge, dedupe, then route each backlog to the correct region sheet. Never duplicate across NA/LAC.
+
+**Which quarter a backlog belongs to.** In both regions, `"Request Qtr" ~ <quarter>` is the
+backlog's quarter and `labels = <quarter>` also counts. Both match multi-quarter values, so a
+backlog tagged `2026Q4,2027Q1` appears in both quarters' reports. This differs from the LAC
+dashboard's own JQL, which uses labels alone.
+
+**Routine releases are left out.** Backlogs whose release title starts with *Daily
+Integrity Check* or *Kill* (e.g. "Kill DW_PROD work") are not part of any report: they are
+dropped on sync and hidden on read, so the rule applies the moment it changes. It matches
+the release, not the backlog's own summary, so enhancement work that merely mentions
+"integrity" stays. The list is `EXCLUDED_RELEASE_TITLES` in `backend/app/config.py`. In a
+circulated file, rows for excluded backlogs are flagged in *Update Status*, never deleted.
+
+**NDP status colours**, the same on screen and in every workbook: Open blue (`DDEBF7`), QC
+Approved orange (`F8CBAD`), IIC Approved pale yellow (`FFF2CC`), IT Leader Approved green
+(`A9D08E`), IT Exec Approved amber (`FFE699`), Verified light green (`C6EFCE`). Each update
+repaints every NDP Status cell on the working tabs, so an unchanged status gets its colour
+and a status that moves to an uncoloured one loses the old colour; any other fill is
+someone's own highlight and is left alone.
 
 ### Jira credentials
 
@@ -520,6 +542,23 @@ Running the updater on a file it has already refreshed finds nothing left to do.
 **Update from Jira** on the table first if that timestamp looks old; the preview shows it.
 And openpyxl rewrites the workbook, which preserves everything above but drops embedded
 charts and images — keep those in a separate file.
+
+### Backlogs the report's query no longer returns
+
+A report leaves out 100-Done backlogs with no hours logged, and any project the region rules
+do not list. So a backlog that finishes can drop out of the report at exactly the moment its
+new status matters. Before
+refreshing a file, the Updater asks Jira directly, by key, for every row in it the report
+does not currently return, using the same fields, record builder and release / NDP lookup as
+a sync, and refreshes those rows like any other. Excluded projects and releases are not
+fetched; their rows are only flagged. They are listed as **Refreshed straight from
+Jira** in the preview and noted in *Update Status*, and they count in the progress panel's
+"In Jira now" column.
+
+Archived data is never used to rewrite a file. It is whatever the last sync that saw the
+backlog recorded, and can be older than the file: refreshing from it once turned a
+`100-Done` back into `20-RequirementCompleted`. A row Jira cannot be asked about is flagged
+and left exactly as it was.
 
 ## The standard spreadsheet layout
 

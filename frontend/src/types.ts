@@ -325,6 +325,8 @@ export interface FileUpdatePlan {
   field_counts: Record<string, number>
   new_rows: FileNewRow[]
   gone_rows: FileGoneRow[]
+  /** Rows the report's query no longer returns, refreshed by key instead. */
+  outside_rows: FileGoneRow[]
   unchanged_cells: number
   warnings: string[]
   /** Status counts, file against Jira now; present when Status was compared. */
@@ -360,6 +362,7 @@ export interface SharePointFile {
 
 export interface SharePointFolder {
   quarter: string
+  root_found: boolean
   found: boolean
   folder: string | null
   searched: string[]
@@ -375,6 +378,7 @@ export interface SharePointScan {
 
 export interface SharePointUpdateResult {
   file: SharePointFile
+  renamed_from: string | null
   cells_updated: number
   rows_added: number
   rows_flagged: number

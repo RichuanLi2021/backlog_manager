@@ -243,6 +243,8 @@ class FileUpdatePlan(BaseModel):
     field_counts: dict[str, int]
     new_rows: list[FileNewRow]
     gone_rows: list[FileGoneRow]
+    # Rows the report's query no longer returns that were refreshed by key instead.
+    outside_rows: list[FileGoneRow] = []
     unchanged_cells: int
     warnings: list[str]
     # Status counts, file against Jira now. Only filled when Status is being compared.
@@ -264,6 +266,9 @@ class SharePointFile(BaseModel):
 
 class SharePointFolder(BaseModel):
     quarter: str
+    # The GLreport (GL_BL) folder is synced to this PC at all.
+    root_found: bool = False
+    # The quarter's <quarter>/Updated folder exists.
     found: bool
     folder: str | None = None
     searched: list[str]
@@ -274,6 +279,10 @@ class SharePointFolder(BaseModel):
 
 class SharePointScanRequest(BaseModel):
     name: str
+
+
+class SharePointCreateRequest(BaseModel):
+    author_email: str
 
 
 class SharePointScan(BaseModel):
@@ -292,6 +301,8 @@ class SharePointUpdateRequest(BaseModel):
 
 class SharePointUpdateResult(BaseModel):
     file: SharePointFile
+    # The file's name before the update put today's date in it, when it changed.
+    renamed_from: str | None = None
     cells_updated: int
     rows_added: int
     rows_flagged: int

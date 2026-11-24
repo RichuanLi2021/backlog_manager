@@ -29,6 +29,7 @@ from ..schemas import (
     TreeSheet,
 )
 from ..services import excel_export, jira_sync, merge, ndp_age
+from ..services.exclusions import excluded_release
 from .snapshots import latest_snapshot, newest_snapshot, snapshot_values, to_info
 
 router = APIRouter(prefix="/api", tags=["reports"])
@@ -174,7 +175,9 @@ def _rows(
     )
     if not include_archived:
         stmt = stmt.where(BacklogSnapshot.archived.is_(False))
-    snapshots = list(db.scalars(stmt))
+    # Applied on read as well as on sync, so a rule change shows at once rather than
+    # after the next Update from Jira.
+    snapshots = [s for s in db.scalars(stmt) if not excluded_release(s.release_title)]
 
     saved = snapshot_values(db, snapshot.id) if snapshot else {}
 

@@ -13,6 +13,7 @@ from datetime import datetime
 from pathlib import Path
 
 from ..config import REPORT_SPECS, SKILL_DIR
+from .exclusions import excluded_release
 
 SEARCH_PASSES = 3
 REQUEST_TIMEOUT = 60
@@ -138,7 +139,8 @@ def fetch_report(report_kind: str, quarter: str) -> list[dict]:
     combo_data, _summary = skill.build_report_workbook(
         quarter, domain_labels=REPORT_SPECS[report_kind]
     )
-    return flatten(combo_data, report_kind, quarter)
+    rows = flatten(combo_data, report_kind, quarter)
+    return [r for r in rows if not excluded_release(r["release_title"])]
 
 
 # Keys per changelog search. Keeps each JQL `key in (...)` well under URL limits.
@@ -212,3 +214,60 @@ def fetch_ndp_status_since(keys: list[str]) -> dict[str, tuple[str, datetime]]:
             status = (((issue.get("fields") or {}).get("status") or {}).get("name")) or ""
             found[issue["key"]] = (status, _entered_current_status(issue))
     return found
+
+
+def fetch_by_keys(keys: list[str], report_kind: str, quarter: str) -> dict[str, dict]:
+    """Current Jira state of specific backlogs, as the same flat rows a sync makes.
+
+    For backlogs a team still tracks that the report leaves out, chiefly 100-Done with
+    no hours logged: a backlog that finishes drops out of the report exactly when its
+    status is worth refreshing.
+    Same fields, same record builder and the same release / NDP
+    enrichment as a sync; only the JQL differs, `key in (...)`.
+
+    Excluded projects and releases are left out, as everywhere else. Keys Jira does not
+    return (deleted, or not visible to this PAT) are absent from the result.
+    """
+    keys = sorted({k for k in keys if k})
+    if not keys:
+        return {}
+    skill = _load_skill()
+    hierarchy = sys.modules["export_hierarchy"]
+    skill.load_jira_env()
+    cfg = skill.load_config()
+    base = (os.getenv("JIRA_URL") or os.getenv("JIRA_SERVER_URL") or "").strip().rstrip("/")
+    auth = skill.build_auth_header()
+    if not auth or not base:
+        raise RuntimeError("No Jira credentials. Put JIRA_URL and JIRA_PAT in backend/.env.")
+
+    source_name = cfg.get("backlog_source_field_name", "backlog source").lower()
+    backlog_source = hierarchy.resolve_field_ids(base, auth, {source_name}).get(source_name)
+    release_field, deploy_field = cfg.get("snx_release_field"), cfg.get("deploy_plan_field")
+    fields = [
+        "summary", "issuetype", "status", "assignee", "reporter", "priority",
+        "labels", "timeoriginalestimate", "timespent", "timetracking",
+        deploy_field, release_field,
+    ]
+    extra = {"labels": "labels"}
+    for name, field_id in (("biz_domain", cfg.get("biz_domain_field")),
+                           ("req_qtr", cfg.get("req_qtr_field"))):
+        if field_id:
+            extra[name] = field_id
+            fields.append(field_id)
+    if backlog_source:
+        fields.append(backlog_source)
+
+    records = []
+    for start in range(0, len(keys), NDP_BATCH):
+        jql = f"key in ({','.join(keys[start : start + NDP_BATCH])})"
+        for issue in skill.search_all(base, auth, jql, fields):
+            record = hierarchy.record_from_issue(
+                issue, None, release_field, deploy_field, backlog_source, extra_fields=extra,
+            )
+            # Excluded projects stay excluded, even when a file still lists them.
+            if not skill.should_exclude_record(record):
+                records.append(record)
+    tree = hierarchy.build_tree(records)
+    release_meta, ndp_meta = hierarchy.enrich_metadata(base, auth, tree)
+    rows = flatten([("OUTSIDE_REPORT", tree, release_meta, ndp_meta)], report_kind, quarter)
+    return {r["key"]: r for r in rows if not excluded_release(r["release_title"])}

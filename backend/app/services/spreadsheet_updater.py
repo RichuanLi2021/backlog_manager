@@ -20,7 +20,7 @@ from datetime import datetime
 from io import BytesIO
 
 from openpyxl import load_workbook
-from openpyxl.styles import Font
+from openpyxl.styles import Font, PatternFill
 from openpyxl.utils import get_column_letter
 
 from ..schemas import (
@@ -35,6 +35,7 @@ from ..schemas import (
 )
 from . import sheet_standard
 from .excel_export import NDP_FILLS
+from .exclusions import excluded_release
 from .sheet_standard import active_tabs, frozen_tabs
 from .spreadsheet_layout import (
     ALL_ALIASES,
@@ -123,8 +124,39 @@ def _targets(layout, current: list[BacklogRow]) -> list[Target]:
     return out
 
 
+OUTSIDE_REASON = "outside the report's Jira query; refreshed directly from Jira"
+
+
+def _source(target: Target, key: str, row_number: int, outside: dict[str, BacklogRow]):
+    """Where one row's Jira data comes from: (row to refresh from, note for the file).
+
+    - In the report and current: the report row, no note.
+    - Left out of the report, but fetched by key: that row, noted. The report drops
+      100-Done with no hours logged, among others, so this is how a backlog that moved
+      on still gets its new status.
+    - Otherwise: nothing to refresh from, only a note. An archived row is NOT used:
+      its data is from the last sync that saw it and can be older than the file,
+      which once turned a 100-Done back into 20-RequirementCompleted.
+    """
+    sheet = target.layout
+    live = target.rows.get(key)
+    if live is not None and not live.archived:
+        return live, None
+    if key in outside:
+        return outside[key], OUTSIDE_REASON
+    release_col = sheet.columns.get("release_title")
+    if release_col and excluded_release(text_of(sheet.value(row_number, release_col))):
+        return None, "routine release, left out of the reports"
+    if live is not None:
+        return None, "archived - Jira stopped returning it; left as it was"
+    return None, "not in this report any more"
+
+
 def _plan_sheet(
-    target: Target, fields: tuple[str, ...], plan: FileUpdatePlan
+    target: Target,
+    fields: tuple[str, ...],
+    plan: FileUpdatePlan,
+    outside: dict[str, BacklogRow],
 ) -> tuple[int, list[str]]:
     """Collect the changes, additions and removals one worksheet would receive."""
     unchanged = 0
@@ -134,26 +166,12 @@ def _plan_sheet(
 
     for key, row_number in sheet_layout.keys:
         seen.add(key)
-        live = target.rows.get(key)
+        live, note = _source(target, key, row_number, outside)
+        if note:
+            entry = FileGoneRow(sheet=sheet_layout.name, row=row_number, key=key, reason=note)
+            (plan.outside_rows if live is not None else plan.gone_rows).append(entry)
         if live is None:
-            plan.gone_rows.append(
-                FileGoneRow(
-                    sheet=sheet_layout.name,
-                    row=row_number,
-                    key=key,
-                    reason="not in this report any more",
-                )
-            )
             continue
-        if live.archived:
-            plan.gone_rows.append(
-                FileGoneRow(
-                    sheet=sheet_layout.name,
-                    row=row_number,
-                    key=key,
-                    reason="archived - Jira stopped returning it",
-                )
-            )
         for name, column in readable.items():
             in_file = text_of(sheet_layout.value(row_number, column))
             live_text = _platform_text(live, name)
@@ -197,6 +215,7 @@ def _plan_from(
     quarter: str,
     last_sync: datetime | None,
     fields: tuple[str, ...],
+    outside: dict[str, BacklogRow] | None = None,
 ) -> tuple[FileUpdatePlan, list[Target]]:
     plan = FileUpdatePlan(
         filename=filename,
@@ -238,7 +257,7 @@ def _plan_from(
             )
             continue
 
-        unchanged, _ = _plan_sheet(target, fields, plan)
+        unchanged, _ = _plan_sheet(target, fields, plan, outside or {})
         plan.unchanged_cells += unchanged
         plan.sheets.append(
             FileSheetPlan(
@@ -269,7 +288,10 @@ def _plan_from(
         plan.field_counts[change.field] = plan.field_counts.get(change.field, 0) + 1
     plan.changes.sort(key=lambda c: (c.sheet, c.row, c.field))
     if "status" in fields:
-        plan.progress = progress(layout, current)
+        fetched = {o.key for o in plan.outside_rows}
+        plan.progress = progress(
+            layout, current, [r for k, r in (outside or {}).items() if k in fetched]
+        )
     return plan, targets
 
 
@@ -281,11 +303,12 @@ def plan_update(
     quarter: str,
     last_sync: datetime | None,
     fields: tuple[str, ...] = JIRA_FIELDS,
+    outside: dict[str, BacklogRow] | None = None,
 ) -> FileUpdatePlan:
     """Report what refreshing this file from the platform would change, without writing."""
     data, reshaped = sheet_standard.standardize(data, filename)
     layout = read_layouts(data, filename, fields, ALL_ALIASES)
-    plan, _ = _plan_from(layout, filename, current, kind, quarter, last_sync, fields)
+    plan, _ = _plan_from(layout, filename, current, kind, quarter, last_sync, fields, outside)
     plan.layout_changes = reshaped
     return plan
 
@@ -322,6 +345,32 @@ def _write_cell(ws, row: int, column: int, name: str, value: str):
     return cell
 
 
+def _rgb(fill) -> str:
+    color = getattr(getattr(fill, "fgColor", None), "rgb", None)
+    return color[-6:].upper() if isinstance(color, str) else ""
+
+
+PALETTE = {_rgb(f) for f in NDP_FILLS.values()}
+
+
+def _paint_ndp_status(ws, column: int, first_row: int):
+    """Colour every NDP Status cell by its status, not only the ones that changed.
+
+    A status that kept its value still gets the palette colour, and a cell whose
+    status moved to one with no colour (Submitted, say) loses the colour of the
+    status it left. A fill that is not from the palette is someone's own
+    highlighting and is left alone.
+    """
+    for row in range(first_row, ws.max_row + 1):
+        cell = ws.cell(row=row, column=column)
+        fill = NDP_FILLS.get(text_of(cell.value).strip())
+        if fill is not None:
+            if _rgb(cell.fill) != _rgb(fill):
+                cell.fill = copy(fill)
+        elif _rgb(cell.fill) in PALETTE:
+            cell.fill = PatternFill(fill_type=None)
+
+
 def _restamp(ws):
     """Keep an `about` or `summary` sheet's timestamp honest after a refresh."""
     for row in ws.iter_rows(min_col=1, max_col=1):
@@ -342,11 +391,14 @@ def build_updated_workbook(
     fields: tuple[str, ...] = JIRA_FIELDS,
     add_new: bool = True,
     flag_gone: bool = True,
+    outside: dict[str, BacklogRow] | None = None,
 ) -> tuple[bytes, FileUpdatePlan]:
     """Write the refreshed workbook, returning the bytes and what was done to it."""
     data, reshaped = sheet_standard.standardize(data, filename)
     layout = read_layouts(data, filename, fields, ALL_ALIASES)
-    plan, targets = _plan_from(layout, filename, current, kind, quarter, last_sync, fields)
+    plan, targets = _plan_from(
+        layout, filename, current, kind, quarter, last_sync, fields, outside
+    )
     plan.layout_changes = reshaped
     try:
         wb = load_workbook(BytesIO(data))
@@ -362,19 +414,13 @@ def build_updated_workbook(
         writable = {f: c for f, c in sheet_layout.columns.items() if f in fields}
         marker = None
 
-        gone_here = {
-            g.row: g.reason for g in plan.gone_rows if g.sheet == sheet_layout.name
-        }
         for key, row_number in sheet_layout.keys:
-            live = target.rows.get(key)
-            if live is None:
-                if flag_gone:
-                    marker = marker or _marker_column(ws, sheet_layout)
-                    ws.cell(row=row_number, column=marker).value = gone_here.get(row_number, "")
-                continue
-            if live.archived and flag_gone:
+            live, note = _source(target, key, row_number, outside or {})
+            if note and flag_gone:
                 marker = marker or _marker_column(ws, sheet_layout)
-                ws.cell(row=row_number, column=marker).value = gone_here.get(row_number, "")
+                ws.cell(row=row_number, column=marker).value = note
+            if live is None:
+                continue
             for name, column in writable.items():
                 in_file = text_of(sheet_layout.value(row_number, column))
                 live_text = _platform_text(live, name)
@@ -394,6 +440,9 @@ def build_updated_workbook(
                     _clone_row(ws, style_row, at, sheet_layout, live, writable, marker)
                     log.append((sheet_layout.name, live.key, "(row added)", "", live.status))
                     at += 1
+
+        if "ndp_status" in writable:
+            _paint_ndp_status(ws, writable["ndp_status"], sheet_layout.header_row + 1)
 
     for ws in wb.worksheets:
         if _norm(ws.title) in {"about", "summary"}:
@@ -456,7 +505,7 @@ def _status_key(status: str) -> tuple:
     return (0, int(head), status) if head.isdigit() else (1, 0, status)
 
 
-def progress(layout, current: list[BacklogRow]) -> FileProgress:
+def progress(layout, current: list[BacklogRow], fetched: list[BacklogRow] = ()) -> FileProgress:
     """How many backlogs and NDPs sit in each status, in the file and in Jira now.
 
     "Now" covers the same report sheets the file covers, including backlogs raised
@@ -493,6 +542,12 @@ def progress(layout, current: list[BacklogRow]) -> FileProgress:
     for row in current:
         if row.sheet not in covered or row.archived:
             continue
+        now_backlogs[row.status or "(blank)"] += 1
+        if row.ndp.startswith("NDP-"):
+            now_ndps[row.ndp] = row.ndp_status or "(blank)"
+    # Backlogs the report's query no longer returns but Jira was asked about by key
+    # are where Jira stands now too; leaving them out would make the columns disagree.
+    for row in fetched:
         now_backlogs[row.status or "(blank)"] += 1
         if row.ndp.startswith("NDP-"):
             now_ndps[row.ndp] = row.ndp_status or "(blank)"

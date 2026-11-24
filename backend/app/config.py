@@ -77,3 +77,9 @@ SHAREPOINT_WEB_URL = os.getenv(
 SHAREPOINT_BACKUP_DIR = Path(
     os.getenv("SHAREPOINT_BACKUP_DIR", BACKEND_DIR / "backups" / "sharepoint")
 )
+
+# Releases whose backlogs are routine work, not tracked in the reports: the recurring
+# integrity checks and the "Kill ..." clean-up releases. Matched case-insensitively
+# against the start of the release title, so enhancement backlogs that merely
+# mention "integrity" in their own summary stay in.
+EXCLUDED_RELEASE_TITLES = (r"daily integrity check\b", r"kill\b")

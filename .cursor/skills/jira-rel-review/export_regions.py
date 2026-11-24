@@ -50,9 +50,11 @@ MAPPING_HEADERS = [
 MANUAL_COLS = ["Developer", "UAT ETA", "PROD ETA", "Comments"]
 
 # Backlog exclusion / region classification rules
-EXCLUDE_KEY_PREFIXES = ("KSPE",)
+EXCLUDE_KEY_PREFIXES = ("KSPE-", "ITDRIVEN-")
 EXCLUDE_LABEL_TOKENS = ("gl-killsp",)
-LAC_KEY_PREFIXES = ("MCAM", "WMCC")
+LAC_KEY_PREFIXES = ("MCAM", "WMCC", "WBRCC-")
+# Other projects whose backlogs are all Request Region = NA in Jira.
+NA_OTHER_PROJECT_PREFIXES = ("RPA-", "TAX-")
 NA_KEY_PREFIXES = ("CISGL", "CISAR", "CISAR-", "CISGL-")
 HDR_FILL = PatternFill("solid", fgColor="4472C4")
 REL_FILL = PatternFill("solid", fgColor="1F4E78")
@@ -112,6 +114,8 @@ def infer_region(record):
         return "NA"
     if any(key.startswith(p) for p in LAC_KEY_PREFIXES):
         return "LAC"
+    if any(key.startswith(p) for p in NA_OTHER_PROJECT_PREFIXES):
+        return "NA"
     labels = record.get("labels", "")
     if isinstance(labels, list):
         tokens = [str(x).lower().strip() for x in labels]

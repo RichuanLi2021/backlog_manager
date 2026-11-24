@@ -9,6 +9,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ..models import BacklogSnapshot, Report
+from .exclusions import excluded_release
 
 # Jira intermittently returns short result sets, so a key must be absent from this
 # many consecutive syncs before it counts as genuinely removed from the backlog.
@@ -24,6 +25,15 @@ SNAPSHOT_FIELDS = [
 def apply_snapshot(db: Session, report_kind: str, quarter: str, rows: list[dict]) -> dict:
     """Upsert rows and archive keys Jira has omitted two syncs in a row."""
     now = datetime.now()
+
+    for snap in db.scalars(
+        select(BacklogSnapshot).where(
+            BacklogSnapshot.report_kind == report_kind, BacklogSnapshot.quarter == quarter
+        )
+    ):
+        if excluded_release(snap.release_title):
+            db.delete(snap)
+    db.flush()
 
     existing = {
         (s.sheet, s.key): s
